@@ -106,8 +106,34 @@ Configuration → Site URL** and **Redirect URLs**.
 | `/api/cron/tick` | every minute | fallback prices + matching pass |
 | `/api/cron/settle` | 21:05 UTC, Mon–Fri | expire day orders, accrue interest, snapshot equity |
 
-Minute-level crons need Vercel **Pro**. On Hobby they run once a day, so the
-Python worker is the real feed and the cron is only a safety net.
+### Cron schedules and the Hobby plan
+
+Hobby allows **at most 2 cron jobs, each running at most once per day**. A
+minute-level schedule (`* * * * *`) is rejected outright at import with:
+
+> Hobby accounts are limited to daily cron jobs.
+
+So `vercel.json` ships with Hobby-compatible daily schedules:
+
+| Path | Schedule (UTC) | In New York | What it does |
+| --- | --- | --- | --- |
+| `/api/cron/tick` | `35 13 * * 1-5` | 09:35 — just after the open | one price refresh + matching pass |
+| `/api/cron/settle` | `5 21 * * 1-5` | 17:05 — after the close | expire day orders, accrue interest, snapshot equity |
+
+**`/api/cron/settle` is fully functional on Hobby** — once per weekday is its
+natural cadence anyway, so nothing is lost there.
+
+**`/api/cron/tick` is degraded on Hobby.** It was designed as a once-a-minute
+safety net for a dead price worker; once a day it can only nudge the market
+back to life at the open. **The Python worker is the real feed** — treat it as
+required infrastructure, not an optional extra, and make sure it stays running
+for the whole competition.
+
+On **Pro**, change the tick back to a real fallback:
+
+```json
+{ "path": "/api/cron/tick", "schedule": "* * * * *" }
+```
 
 ---
 
