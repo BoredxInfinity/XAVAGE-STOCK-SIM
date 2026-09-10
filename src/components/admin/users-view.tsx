@@ -4,9 +4,10 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  Check, Copy, Download, Eye, EyeOff, Loader2,
-  RefreshCw, ShieldCheck, TriangleAlert, UserPlus, UserX,
+  Check, Copy, Download, Eye, EyeOff, KeyRound, Loader2,
+  RefreshCw, ShieldCheck, TriangleAlert, UserPlus, UserX, Wand2, X,
 } from "lucide-react";
+import { generateCredential } from "@/lib/credentials";
 import { Panel } from "@/components/ui/panel";
 import { createClient } from "@/lib/supabase/client";
 import { cn, relative } from "@/lib/format";
@@ -31,7 +32,7 @@ interface AdminUser {
 
 export function UsersView() {
   const qc = useQueryClient();
-  const [form, setForm] = useState({ email: "", display_name: "", role: "participant", team_id: "" });
+  const [form, setForm] = useState({ email: "", display_name: "", role: "participant", team_id: "", password: "" });
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<{ email: string; password: string } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -39,6 +40,10 @@ export function UsersView() {
   // crowded hall doesn't expose the whole cohort at once.
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [revealAll, setRevealAll] = useState(false);
+  // Account whose password is being set by hand, plus the value being typed.
+  const [editing, setEditing] = useState<AdminUser | null>(null);
+  const [customPw, setCustomPw] = useState("");
+  const [saving, setSaving] = useState(false);
 
   function toggleReveal(id: string) {
     setRevealed((prev) => {
@@ -82,6 +87,8 @@ export function UsersView() {
         display_name: form.display_name.trim(),
         role: form.role,
         team_id: form.team_id || null,
+        // Omitted -> the server mints a readable random one.
+        ...(form.password.trim() ? { password: form.password.trim() } : {}),
       }),
     });
 
@@ -90,7 +97,7 @@ export function UsersView() {
       toast.error("Could not create account", { description: json.error });
     } else {
       setIssued({ email: form.email.trim().toLowerCase(), password: json.temporary_password });
-      setForm({ email: "", display_name: "", role: "participant", team_id: form.team_id });
+      setForm({ email: "", display_name: "", role: "participant", team_id: form.team_id, password: "" });
       toast.success("Account created");
       refresh();
     }
@@ -127,6 +134,33 @@ export function UsersView() {
     setIssued({ email: user.email, password: json.password });
     setRevealed((prev) => new Set(prev).add(user.id));
     toast.success(`New password issued for ${user.display_name}`);
+    refresh();
+  }
+
+  /** Set a specific password chosen by the organiser, rather than a generated one. */
+  async function saveCustomPassword() {
+    if (!editing || customPw.length < 8) return;
+    setSaving(true);
+
+    const res = await fetch(`/api/admin/users/${editing.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_password: customPw }),
+    });
+    const json = await res.json();
+
+    if (!res.ok) {
+      toast.error("Could not set password", { description: json.error });
+      setSaving(false);
+      return;
+    }
+
+    setIssued({ email: editing.email, password: customPw });
+    setRevealed((prev) => new Set(prev).add(editing.id));
+    toast.success(`Password set for ${editing.display_name}`);
+    setEditing(null);
+    setCustomPw("");
+    setSaving(false);
     refresh();
   }
 
@@ -211,7 +245,7 @@ export function UsersView() {
       )}
 
       <Panel title="Create an account" bodyClassName="p-4">
-        <form onSubmit={createUser} className="grid sm:grid-cols-2 lg:grid-cols-5 gap-2 items-end">
+        <form onSubmit={createUser} className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2 items-end">
           <div>
             <label className="label" htmlFor="u-name">Display name</label>
             <input id="u-name" className="field" required value={form.display_name}
@@ -240,7 +274,24 @@ export function UsersView() {
               <option value="admin">Admin</option>
             </select>
           </div>
-          <button type="submit" disabled={busy} className="btn btn-primary">
+          <div>
+            <label className="label" htmlFor="u-pw">Password</label>
+            <div className="flex gap-1.5">
+              <input
+                id="u-pw" type="text" autoComplete="off" className="field num"
+                placeholder="auto-generate"
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+              />
+              <button type="button" onClick={() => setForm({ ...form, password: generateCredential() })}
+                      className="btn btn-ghost shrink-0 !px-2" title="Suggest a readable random one">
+                <Wand2 size={14} />
+              </button>
+            </div>
+          </div>
+          <button type="submit"
+                  disabled={busy || (form.password.trim().length > 0 && form.password.trim().length < 8)}
+                  className="btn btn-primary">
             {busy ? <Loader2 size={15} className="animate-spin" /> : <UserPlus size={15} />} Create
           </button>
         </form>
@@ -328,9 +379,14 @@ export function UsersView() {
                     </td>
                     <td className="r">
                       <div className="flex gap-1 justify-end">
+                        <button onClick={() => { setEditing(u); setCustomPw(""); }}
+                                className="btn btn-ghost !px-2 !py-1 !text-[11px]"
+                                title="Set a specific password">
+                          <KeyRound size={12} />
+                        </button>
                         <button onClick={() => regeneratePassword(u)}
                                 className="btn btn-ghost !px-2 !py-1 !text-[11px]"
-                                title="Issue a new password">
+                                title="Issue a new random password">
                           <RefreshCw size={12} />
                         </button>
                         <button
@@ -350,6 +406,78 @@ export function UsersView() {
           </div>
         )}
       </Panel>
+
+      {/* Set a specific password. Shown in plain text on purpose -- the whole
+          point is that the organiser reads it out and hands it over. */}
+      {editing && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/70 backdrop-blur-sm px-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setEditing(null); }}
+          role="dialog" aria-modal="true" aria-label="Set password"
+        >
+          <div className="panel-glow w-full max-w-md p-5">
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <h2 className="text-sm font-semibold">Set password</h2>
+                <p className="text-xs text-[var(--color-text-dim)] mt-0.5">
+                  {editing.display_name} · <span className="num">{editing.email}</span>
+                </p>
+              </div>
+              <button onClick={() => setEditing(null)}
+                      className="p-1 text-[var(--color-text-faint)] hover:text-[var(--color-text)]"
+                      aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+
+            <label className="label" htmlFor="custom-pw">New password</label>
+            <div className="flex gap-2">
+              <input
+                id="custom-pw" type="text" autoFocus autoComplete="off"
+                className="field num" placeholder="at least 8 characters"
+                value={customPw}
+                onChange={(e) => setCustomPw(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && customPw.length >= 8 && !saving) saveCustomPassword();
+                  if (e.key === "Escape") setEditing(null);
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setCustomPw(generateCredential())}
+                className="btn btn-ghost shrink-0"
+                title="Suggest a readable random one"
+              >
+                <Wand2 size={14} />
+              </button>
+            </div>
+
+            <p className={cn(
+              "mt-1.5 text-[10.5px]",
+              customPw.length > 0 && customPw.length < 8
+                ? "text-[var(--color-down)]" : "text-[var(--color-text-faint)]",
+            )}>
+              {customPw.length > 0 && customPw.length < 8
+                ? `${8 - customPw.length} more character${8 - customPw.length === 1 ? "" : "s"} needed`
+                : "Replaces their current password immediately. It stays visible in this table."}
+            </p>
+
+            <div className="flex gap-2 mt-4">
+              <button onClick={() => setEditing(null)} className="btn btn-ghost flex-1">
+                Cancel
+              </button>
+              <button
+                onClick={saveCustomPassword}
+                disabled={customPw.length < 8 || saving}
+                className="btn btn-primary flex-1"
+              >
+                {saving ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}
+                Set password
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

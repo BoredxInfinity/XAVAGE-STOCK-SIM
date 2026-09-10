@@ -11,7 +11,9 @@ const PatchUser = z.object({
   role: z.enum(["admin", "participant"]).optional(),
   team_id: z.string().uuid().nullable().optional(),
   is_active: z.boolean().optional(),
-  new_password: z.string().min(10).max(72).optional(),
+  // 8 is the floor: these are organiser-issued codes for a four-week game,
+  // and a longer minimum just pushes admins toward writing them on paper.
+  new_password: z.string().min(8).max(72).optional(),
   // Ask the server to mint a fresh readable credential instead of supplying one.
   regenerate: z.boolean().optional(),
 });

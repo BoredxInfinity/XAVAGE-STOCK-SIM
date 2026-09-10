@@ -11,7 +11,8 @@ const CreateUser = z.object({
   display_name: z.string().min(1).max(60),
   role: z.enum(["admin", "participant"]).default("participant"),
   team_id: z.string().uuid().nullable().optional(),
-  password: z.string().min(10).max(72).optional(),
+  // Optional: omit and the server mints a readable random credential.
+  password: z.string().min(8).max(72).optional(),
 });
 
 export async function GET() {
