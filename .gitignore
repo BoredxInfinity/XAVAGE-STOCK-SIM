@@ -1,0 +1,19 @@
+node_modules/
+.next/
+out/
+build/
+.env
+.env.local
+.env*.local
+.vercel
+*.tsbuildinfo
+next-env.d.ts
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+
+# local Supabase CLI state
+supabase/.temp/
+supabase/.branches/
