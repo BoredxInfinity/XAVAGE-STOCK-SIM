@@ -16,11 +16,13 @@ transaction-level advisory lock, so a doubled call is a no-op, not a double fill
 from __future__ import annotations
 
 import logging
+import random
 import signal
 import sys
 import time
 from datetime import datetime, timezone
 
+import httpx
 from supabase import Client, create_client
 
 from config import Config
@@ -35,6 +37,38 @@ logging.basicConfig(
 log = logging.getLogger("xavage.worker")
 
 _running = True
+
+# Supabase sits behind an HTTP/2 proxy that will reset a stream under load --
+# the initial chart backfill fires ~100 upserts back to back and reliably
+# trips it, surfacing as httpx.RemoteProtocolError(StreamReset). These are
+# transient: the same request succeeds moments later. Retry them rather than
+# losing the whole cycle.
+TRANSIENT = (
+    httpx.RemoteProtocolError,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.ConnectTimeout,
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.PoolTimeout,
+)
+
+
+def with_retry(label: str, fn, attempts: int = 4, base_delay: float = 0.6):
+    """Run a Supabase call, retrying transient network failures with backoff."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except TRANSIENT as exc:
+            if attempt == attempts:
+                log.error("%s failed after %d attempts: %s", label, attempts, exc)
+                raise
+            # jitter so parallel retries don't resynchronise into another burst
+            delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.3)
+            log.warning("%s: %s (attempt %d/%d, retrying in %.1fs)",
+                        label, type(exc).__name__, attempt, attempts, delay)
+            time.sleep(delay)
 
 
 def _stop(signum, _frame):
@@ -67,14 +101,14 @@ class Worker:
         participants get "no live price" on symbols the admin enabled, which
         is very hard to diagnose mid-competition.
         """
-        res = (
+        res = with_retry("universe", lambda: (
             self.db.table("instruments")
             .select("symbol", count="exact")
             .eq("is_tradable", True)
             .order("symbol")
             .limit(self.cfg.max_symbols)
             .execute()
-        )
+        ))
         symbols = [row["symbol"] for row in (res.data or [])]
 
         total = res.count if res.count is not None else len(symbols)
@@ -96,13 +130,13 @@ class Worker:
         a lagging feed, so the worker follows the same rule the engine does.
         """
         try:
-            res = (
+            res = with_retry("game_settings", lambda: (
                 self.db.table("game_settings")
                 .select("market_hours_mode")
                 .eq("id", True)
                 .maybe_single()
                 .execute()
-            )
+            ))
             return (res.data or {}).get("market_hours_mode") or "regular"
         except Exception:  # noqa: BLE001
             return "regular"
@@ -116,10 +150,10 @@ class Worker:
         return state == "regular"
 
     def heartbeat(self, source: str = "worker") -> None:
-        self.db.table("system_state").update({
+        with_retry("heartbeat", lambda: self.db.table("system_state").update({
             "last_tick_at": datetime.now(timezone.utc).isoformat(),
             "last_tick_source": source,
-        }).eq("id", True).execute()
+        }).eq("id", True).execute())
 
     # ----------------------------------------------------------------- stages
     def refresh_prev_closes(self, symbols: list[str]) -> None:
@@ -139,7 +173,8 @@ class Worker:
             return 0, 0
 
         # on_conflict=symbol -> one round trip for the whole universe
-        self.db.table("quotes").upsert(quotes, on_conflict="symbol").execute()
+        with_retry("quotes upsert",
+                   lambda: self.db.table("quotes").upsert(quotes, on_conflict="symbol").execute())
 
         # Only bars newer than what we already stored.
         fresh = [b for b in bars if b["ts"] > self.bar_hwm.get(b["symbol"], "")]
@@ -152,14 +187,32 @@ class Worker:
         return len(quotes), len(fresh)
 
     def write_bars(self, bars: list[dict]) -> None:
-        for i in range(0, len(bars), 500):
-            self.db.table("price_bars").upsert(
-                bars[i : i + 500], on_conflict="symbol,interval,ts"
-            ).execute()
+        """
+        Chunked so no single request is huge, retried so a reset stream costs a
+        chunk rather than the cycle, and paced with a short pause so the first
+        backfill (~100 chunks) doesn't look like a flood to the proxy.
+        """
+        chunk = 200
+        total = (len(bars) + chunk - 1) // chunk
+
+        for n, i in enumerate(range(0, len(bars), chunk), start=1):
+            batch = bars[i : i + chunk]
+            try:
+                with_retry(
+                    f"price_bars chunk {n}/{total}",
+                    lambda b=batch: self.db.table("price_bars")
+                    .upsert(b, on_conflict="symbol,interval,ts").execute(),
+                )
+            except TRANSIENT:
+                # One lost chunk is a small gap in chart history that the next
+                # history refresh repairs. Never abandon the remaining chunks.
+                continue
+            if total > 5:
+                time.sleep(0.05)
 
     def run_matching(self) -> dict | None:
         try:
-            res = self.db.rpc("match_orders", {}).execute()
+            res = with_retry("match_orders", lambda: self.db.rpc("match_orders", {}).execute())
             return res.data
         except Exception as exc:  # noqa: BLE001
             log.error("match_orders failed: %s", exc)
@@ -186,13 +239,13 @@ class Worker:
 
     def enrich_profiles(self) -> int:
         """Fill in names/sectors for symbols added by search with bare metadata."""
-        res = (
+        res = with_retry("pending profiles", lambda: (
             self.db.table("instruments")
             .select("symbol, name, sector")
             .or_("sector.is.null,name.eq.")
             .limit(15)
             .execute()
-        )
+        ))
         pending = [r["symbol"] for r in (res.data or [])]
         if not pending:
             return 0
@@ -202,9 +255,11 @@ class Worker:
             profile = fetch_profile(symbol)
             if not profile:
                 continue
-            self.db.table("instruments").update({
-                k: v for k, v in profile.items() if k != "symbol" and v is not None
-            }).eq("symbol", symbol).execute()
+            with_retry(f"profile {symbol}", lambda pr=profile, sym=symbol: (
+                self.db.table("instruments").update({
+                    k: v for k, v in pr.items() if k != "symbol" and v is not None
+                }).eq("symbol", sym).execute()
+            ))
             updated += 1
 
         return updated
@@ -214,20 +269,22 @@ class Worker:
         if just_closed(self.last_state, state):
             log.info("regular session closed - expiring day orders")
             try:
-                res = self.db.rpc("expire_day_orders", {}).execute()
+                res = with_retry("expire_day_orders",
+                             lambda: self.db.rpc("expire_day_orders", {}).execute())
                 log.info("day orders expired: %s", res.data)
             except Exception as exc:  # noqa: BLE001
                 log.error("expire_day_orders failed: %s", exc)
 
             try:
-                res = self.db.rpc("accrue_daily_interest", {"p_force": False}).execute()
+                res = with_retry("accrue_daily_interest",
+                                 lambda: self.db.rpc("accrue_daily_interest", {"p_force": False}).execute())
                 log.info("interest accrual: %s", res.data)
             except Exception as exc:  # noqa: BLE001
                 log.error("accrue_daily_interest failed: %s", exc)
 
     def snapshot(self) -> None:
         try:
-            self.db.rpc("take_snapshots", {}).execute()
+            with_retry("take_snapshots", lambda: self.db.rpc("take_snapshots", {}).execute())
         except Exception as exc:  # noqa: BLE001
             log.error("take_snapshots failed: %s", exc)
 
