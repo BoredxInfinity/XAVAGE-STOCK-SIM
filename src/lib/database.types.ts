@@ -183,6 +183,19 @@ export type PortfolioSnapshot = {
   total_return_pct: number;
 }
 
+/**
+ * Admin-issued login credential. These are organiser-generated codes, never a
+ * password the participant chose, which is what makes storing them acceptable.
+ * Readable only by admins (RLS).
+ */
+export type IssuedCredential = {
+  user_id: string;
+  password: string;
+  is_stale: boolean;
+  issued_at: string;
+  issued_by: string | null;
+};
+
 export type Announcement = {
   id: string;
   title: string;
@@ -294,6 +307,7 @@ export type Database = {
       game_settings: Row<GameSettings>;
       portfolio_snapshots: Row<PortfolioSnapshot>;
       announcements: Row<Announcement>;
+      issued_credentials: Row<IssuedCredential>;
       price_bars: Row<{
         id: number; symbol: string; interval: string; ts: string;
         o: number; h: number; l: number; c: number; v: number;

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAdmin, writeAudit } from "@/lib/admin-guard";
+import { generateCredential } from "@/lib/credentials";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,15 +14,6 @@ const CreateUser = z.object({
   password: z.string().min(10).max(72).optional(),
 });
 
-/** Readable temporary password an organiser can dictate over the noise of a hall. */
-function tempPassword() {
-  const words = ["Alpha", "Bravo", "Delta", "Echo", "Falcon", "Gamma", "Hawk", "Indigo",
-                 "Juno", "Kilo", "Lima", "Nova", "Orion", "Quartz", "Rally", "Sierra"];
-  const pick = () => words[Math.floor(Math.random() * words.length)];
-  const digits = String(Math.floor(1000 + Math.random() * 9000));
-  return `${pick()}-${pick()}-${digits}`;
-}
-
 export async function GET() {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.response;
@@ -32,7 +24,26 @@ export async function GET() {
     .order("created_at", { ascending: true });
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ users: data ?? [] });
+
+  // Organisers issue these credentials, so they can read them back to hand out
+  // slips or recover a locked-out participant. Admin-gated by requireAdmin().
+  const { data: creds } = await guard.ctx.admin
+    .from("issued_credentials")
+    .select("user_id, password, is_stale, issued_at");
+
+  const byUser = new Map((creds ?? []).map((c) => [c.user_id, c]));
+
+  return NextResponse.json({
+    users: (data ?? []).map((u) => {
+      const c = byUser.get(u.id);
+      return {
+        ...u,
+        issued_password: c?.password ?? null,
+        password_is_stale: c?.is_stale ?? false,
+        password_issued_at: c?.issued_at ?? null,
+      };
+    }),
+  });
 }
 
 export async function POST(request: Request) {
@@ -48,7 +59,7 @@ export async function POST(request: Request) {
   }
 
   const { email, display_name, role, team_id } = parsed.data;
-  const password = parsed.data.password ?? tempPassword();
+  const password = parsed.data.password ?? generateCredential();
   const { admin } = guard.ctx;
 
   const { data: created, error } = await admin.auth.admin.createUser({
@@ -72,7 +83,9 @@ export async function POST(request: Request) {
   // The auth trigger creates the profile; set the fields it can't know about.
   const { error: profileError } = await admin
     .from("profiles")
-    .update({ display_name, role, team_id: team_id ?? null, must_change_password: true, is_active: true })
+    // Participants keep the credential the organiser issued -- no forced
+    // rotation, so what's stored here stays the working password.
+    .update({ display_name, role, team_id: team_id ?? null, must_change_password: false, is_active: true })
     .eq("id", created.user.id);
 
   if (profileError) {
@@ -81,6 +94,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: profileError.message }, { status: 500 });
   }
 
+  const { error: credError } = await admin.from("issued_credentials").upsert({
+    user_id: created.user.id,
+    password,
+    is_stale: false,
+    issued_at: new Date().toISOString(),
+    issued_by: guard.ctx.actorId,
+  });
+
+  if (credError) {
+    // Not fatal: the account works, the organiser just can't read the password
+    // back later. Say so rather than failing silently.
+    console.error("could not record issued credential:", credError.message);
+  }
+
+  // The password itself is deliberately not audited -- audit_log is readable by
+  // every admin and there is no reason to duplicate the secret into it.
   await writeAudit(guard.ctx, "user.create", "profile", created.user.id, { email, role, team_id });
 
   // The password is returned exactly once, for the organiser to hand over.

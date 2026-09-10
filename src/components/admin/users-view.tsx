@@ -4,7 +4,8 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  Check, Copy, KeyRound, Loader2, ShieldCheck, UserPlus, UserX,
+  Check, Copy, Download, Eye, EyeOff, Loader2,
+  RefreshCw, ShieldCheck, TriangleAlert, UserPlus, UserX,
 } from "lucide-react";
 import { Panel } from "@/components/ui/panel";
 import { createClient } from "@/lib/supabase/client";
@@ -21,6 +22,11 @@ interface AdminUser {
   must_change_password: boolean;
   last_login_at: string | null;
   created_at: string;
+  /** Organiser-issued credential. Null for accounts created before this existed. */
+  issued_password: string | null;
+  /** True once the user changed their own password: the stored value no longer works. */
+  password_is_stale: boolean;
+  password_issued_at: string | null;
 }
 
 export function UsersView() {
@@ -29,6 +35,18 @@ export function UsersView() {
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<{ email: string; password: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  // Passwords stay masked until asked for, so a projector or a shoulder in a
+  // crowded hall doesn't expose the whole cohort at once.
+  const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  const [revealAll, setRevealAll] = useState(false);
+
+  function toggleReveal(id: string) {
+    setRevealed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
 
   const { data: users = [], isLoading } = useQuery({
     queryKey: ["admin-users"],
@@ -89,21 +107,47 @@ export function UsersView() {
     else { toast.success(label); refresh(); }
   }
 
-  async function resetPassword(user: AdminUser) {
-    const pw = window.prompt(
-      `New temporary password for ${user.display_name} (min 10 characters).\nThey'll be forced to change it at next sign-in.`,
-      "",
-    );
-    if (!pw) return;
-    if (pw.length < 10) { toast.error("Password must be at least 10 characters."); return; }
+  /** Mint a fresh readable credential server-side and store it against the account. */
+  async function regeneratePassword(user: AdminUser) {
+    if (!window.confirm(
+      `Issue a new password for ${user.display_name}?\n\nTheir current one stops working immediately.`
+    )) return;
 
     const res = await fetch(`/api/admin/users/${user.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ new_password: pw }),
+      body: JSON.stringify({ regenerate: true }),
     });
-    if (!res.ok) toast.error("Failed", { description: (await res.json()).error });
-    else { setIssued({ email: user.email, password: pw }); toast.success("Password reset"); refresh(); }
+    const json = await res.json();
+
+    if (!res.ok) {
+      toast.error("Failed", { description: json.error });
+      return;
+    }
+    setIssued({ email: user.email, password: json.password });
+    setRevealed((prev) => new Set(prev).add(user.id));
+    toast.success(`New password issued for ${user.display_name}`);
+    refresh();
+  }
+
+  /** Credential slips for handing out. */
+  function exportCredentials() {
+    const rows = users
+      .filter((u) => u.role === "participant" && u.issued_password && !u.password_is_stale)
+      .map((u) => [u.display_name, u.email, u.issued_password, teamName(u.team_id) ?? "No team"]);
+
+    if (rows.length === 0) { toast.error("No issued credentials to export."); return; }
+
+    const csv = [["Name", "Email", "Password", "Team"], ...rows]
+      .map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `xavage-credentials-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${rows.length} credential${rows.length === 1 ? "" : "s"}`);
   }
 
   function copyCredentials() {
@@ -115,11 +159,22 @@ export function UsersView() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-lg font-bold tracking-tight">Accounts</h1>
-        <p className="text-xs text-[var(--color-text-dim)]">
-          You provision every account. Each new user gets a one-time password and must change it at first sign-in.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h1 className="text-lg font-bold tracking-tight">Accounts</h1>
+          <p className="text-xs text-[var(--color-text-dim)]">
+            You issue every credential, so you can read them back here to hand out or recover.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => setRevealAll((v) => !v)} className="btn btn-ghost !py-1.5">
+            {revealAll ? <EyeOff size={14} /> : <Eye size={14} />}
+            {revealAll ? "Hide all" : "Reveal all"}
+          </button>
+          <button onClick={exportCredentials} className="btn btn-primary !py-1.5">
+            <Download size={14} /> Export slips
+          </button>
+        </div>
       </div>
 
       {issued && (
@@ -127,7 +182,7 @@ export function UsersView() {
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-violet)] mb-2">
-                Credentials — shown once
+                Newly issued credentials
               </h2>
               <dl className="space-y-1 text-xs">
                 <div className="flex gap-2">
@@ -140,7 +195,7 @@ export function UsersView() {
                 </div>
               </dl>
               <p className="text-[10.5px] text-[var(--color-text-faint)] mt-2">
-                Hand this to the participant. It won&apos;t be shown again — you can always reset it below.
+                Hand this to the participant. It also stays visible in the table below.
               </p>
             </div>
             <div className="flex flex-col gap-1.5 shrink-0">
@@ -198,13 +253,14 @@ export function UsersView() {
               <thead>
                 <tr>
                   <th>Name</th><th>Email</th><th>Team</th><th>Role</th>
-                  <th className="hidden lg:table-cell">Last sign-in</th>
+                  <th>Password</th>
+                  <th className="hidden xl:table-cell">Last sign-in</th>
                   <th>Status</th><th className="r">Controls</th>
                 </tr>
               </thead>
               <tbody>
                 {users.length === 0 && (
-                  <tr><td colSpan={7} className="text-center py-10 text-xs text-[var(--color-text-faint)]">
+                  <tr><td colSpan={8} className="text-center py-10 text-xs text-[var(--color-text-faint)]">
                     No accounts yet.
                   </td></tr>
                 )}
@@ -228,19 +284,54 @@ export function UsersView() {
                         {u.role === "admin" && <ShieldCheck size={10} />} {u.role}
                       </span>
                     </td>
-                    <td className="hidden lg:table-cell text-[11px] text-[var(--color-text-faint)]">
+                    <td>
+                      {!u.issued_password ? (
+                        <span className="text-[11px] text-[var(--color-text-faint)]">
+                          not recorded
+                        </span>
+                      ) : u.password_is_stale ? (
+                        <span className="chip chip-warn" title="This user changed their own password, so the issued one no longer works. Issue a new one to regain access.">
+                          <TriangleAlert size={10} /> changed by user
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1.5">
+                          <span className="num text-[11px] font-semibold text-[var(--color-neon-bright)] w-[130px] inline-block">
+                            {revealAll || revealed.has(u.id) ? u.issued_password : "•".repeat(14)}
+                          </span>
+                          <button
+                            onClick={() => toggleReveal(u.id)}
+                            className="p-1 text-[var(--color-text-faint)] hover:text-[var(--color-text)]"
+                            aria-label={revealed.has(u.id) ? "Hide password" : "Reveal password"}
+                          >
+                            {revealAll || revealed.has(u.id) ? <EyeOff size={12} /> : <Eye size={12} />}
+                          </button>
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(
+                                `Email: ${u.email}\nPassword: ${u.issued_password}`);
+                              toast.success(`Credentials for ${u.display_name} copied`);
+                            }}
+                            className="p-1 text-[var(--color-text-faint)] hover:text-[var(--color-text)]"
+                            aria-label={`Copy credentials for ${u.display_name}`}
+                          >
+                            <Copy size={12} />
+                          </button>
+                        </span>
+                      )}
+                    </td>
+                    <td className="hidden xl:table-cell text-[11px] text-[var(--color-text-faint)]">
                       {u.last_login_at ? relative(u.last_login_at) : "never"}
                     </td>
                     <td>
                       {!u.is_active ? <span className="chip chip-down">Disabled</span>
-                        : u.must_change_password ? <span className="chip chip-warn">Temp password</span>
                         : <span className="chip chip-up">Active</span>}
                     </td>
                     <td className="r">
                       <div className="flex gap-1 justify-end">
-                        <button onClick={() => resetPassword(u)}
-                                className="btn btn-ghost !px-2 !py-1 !text-[11px]" title="Reset password">
-                          <KeyRound size={12} />
+                        <button onClick={() => regeneratePassword(u)}
+                                className="btn btn-ghost !px-2 !py-1 !text-[11px]"
+                                title="Issue a new password">
+                          <RefreshCw size={12} />
                         </button>
                         <button
                           onClick={() => patch(u.id, { is_active: !u.is_active },
