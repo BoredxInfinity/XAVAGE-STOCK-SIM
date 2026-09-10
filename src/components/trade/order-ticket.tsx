@@ -41,7 +41,7 @@ export function OrderTicket({ symbol }: { symbol: string }) {
   const position = portfolio?.positions.find((p) => p.symbol === symbol);
   const heldQty = position?.qty ?? 0;
   const sellable = Math.max(0, heldQty - (position?.reserved_qty ?? 0));
-  const buyingPower = portfolio?.metrics.buying_power ?? 0;
+  const buyingPower = portfolio?.metrics?.buying_power ?? 0;
 
   // Reset the idempotency key whenever the ticket materially changes, so an
   // edited order isn't mistaken for a retry of the previous one.

@@ -39,8 +39,18 @@ begin
     v_team_id := v_profile.team_id;
   end if;
 
+  -- Admins have no team. Return the SAME shape with zeroed metrics rather than
+  -- omitting the key -- callers should never have to guard for a missing field.
   if v_team_id is null then
-    return jsonb_build_object('ok', true, 'team', null, 'positions', '[]'::jsonb);
+    return jsonb_build_object(
+      'ok', true,
+      'team', null,
+      'metrics', jsonb_build_object(
+        'cash', 0, 'reserved_cash', 0, 'positions_value', 0, 'gross_exposure', 0,
+        'equity', 0, 'buying_power', 0, 'total_pnl', 0, 'total_return_pct', 0
+      ),
+      'positions', '[]'::jsonb
+    );
   end if;
 
   select * into v_team from public.teams where id = v_team_id;

@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Ban } from "lucide-react";
+import { AlertTriangle, Ban, Users } from "lucide-react";
 import { Panel } from "@/components/ui/panel";
 import { PriceChart } from "@/components/trade/price-chart";
 import { OrderTicket } from "@/components/trade/order-ticket";
@@ -164,7 +164,20 @@ export function SymbolView({ instrument }: { instrument: Instrument }) {
 
         <div className="lg:sticky lg:top-[104px]">
           <Panel glow title="Order ticket" bodyClassName="p-0">
-            {instrument.is_tradable && !instrument.is_halted ? (
+            {/* Admins have no team, so there is no book to trade against --
+                show why rather than a form that can only fail. */}
+            {portfolio && !portfolio.team ? (
+              <div className="p-6 text-center">
+                <Users size={22} className="mx-auto text-[var(--color-text-faint)] mb-2" />
+                <p className="text-sm font-medium text-[var(--color-text-dim)]">
+                  No team assigned
+                </p>
+                <p className="text-xs text-[var(--color-text-faint)] mt-1">
+                  You&apos;re viewing this as an organiser. Trading needs a team book —
+                  participants place the orders.
+                </p>
+              </div>
+            ) : instrument.is_tradable && !instrument.is_halted ? (
               <OrderTicket symbol={symbol} />
             ) : (
               <div className="p-6 text-center">

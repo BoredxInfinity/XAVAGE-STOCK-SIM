@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from supabase import Client, create_client
 
 from config import Config
-from feed import fetch_bars, fetch_daily_closes, fetch_profile, fetch_quotes_fast
+from feed import fetch_bars_bulk, fetch_daily_closes, fetch_intraday, fetch_profile
 from market import just_closed, now_ny, session_state
 
 logging.basicConfig(
@@ -48,24 +48,72 @@ class Worker:
         self.cfg = cfg
         self.db: Client = create_client(cfg.supabase_url, cfg.service_role_key)
         self.last_state = session_state()
-        self.last_bar_run = 0.0
         self.last_snapshot = 0.0
         self.last_profile_run = 0.0
         self.last_closes_run = 0.0
+        self.last_history_run = 0.0
+        # newest 1m bar already written per symbol, so each cycle writes only
+        # the handful of new bars instead of re-upserting the whole day
+        self.bar_hwm: dict[str, str] = {}
         # official previous closes, refreshed from daily bars a few times a day
         self.prev_closes: dict[str, float] = {}
         self.cycle = 0
 
     # ---------------------------------------------------------------- helpers
     def universe(self) -> list[str]:
+        """
+        Symbols to quote. Ordered so that if MAX_SYMBOLS ever truncates the
+        universe it does so predictably, and loudly -- a silent cap means
+        participants get "no live price" on symbols the admin enabled, which
+        is very hard to diagnose mid-competition.
+        """
         res = (
             self.db.table("instruments")
-            .select("symbol")
+            .select("symbol", count="exact")
             .eq("is_tradable", True)
+            .order("symbol")
             .limit(self.cfg.max_symbols)
             .execute()
         )
-        return [row["symbol"] for row in (res.data or [])]
+        symbols = [row["symbol"] for row in (res.data or [])]
+
+        total = res.count if res.count is not None else len(symbols)
+        if total > len(symbols):
+            log.warning(
+                "MAX_SYMBOLS=%d is truncating the universe: %d tradable "
+                "instruments, only %d quoted. Raise MAX_SYMBOLS or disable "
+                "instruments you don't need.",
+                self.cfg.max_symbols, total, len(symbols),
+            )
+
+        return symbols
+
+    def game_hours_mode(self) -> str:
+        """
+        The app decides what "open" means: an admin can widen the session to
+        pre/post or force it always-open. Polling on a 2-minute idle cadence
+        while participants are actively trading extended hours would look like
+        a lagging feed, so the worker follows the same rule the engine does.
+        """
+        try:
+            res = (
+                self.db.table("game_settings")
+                .select("market_hours_mode")
+                .eq("id", True)
+                .maybe_single()
+                .execute()
+            )
+            return (res.data or {}).get("market_hours_mode") or "regular"
+        except Exception:  # noqa: BLE001
+            return "regular"
+
+    @staticmethod
+    def is_live(state: str, mode: str) -> bool:
+        if mode == "always_open":
+            return True
+        if mode == "extended":
+            return state in ("pre", "regular", "post")
+        return state == "regular"
 
     def heartbeat(self, source: str = "worker") -> None:
         self.db.table("system_state").update({
@@ -81,14 +129,33 @@ class Worker:
             self.prev_closes.update(closes)
             log.info("cached %d previous close(s)", len(closes))
 
-    def push_quotes(self, symbols: list[str]) -> int:
-        quotes = fetch_quotes_fast(symbols, self.cfg.batch_size, self.prev_closes)
+    def push_market_data(self, symbols: list[str]) -> tuple[int, int]:
+        """
+        One download feeds both the live quote and the intraday chart, so the
+        chart can never fall behind the price.
+        """
+        quotes, bars = fetch_intraday(symbols, self.cfg.batch_size, self.prev_closes)
         if not quotes:
-            return 0
+            return 0, 0
 
         # on_conflict=symbol -> one round trip for the whole universe
         self.db.table("quotes").upsert(quotes, on_conflict="symbol").execute()
-        return len(quotes)
+
+        # Only bars newer than what we already stored.
+        fresh = [b for b in bars if b["ts"] > self.bar_hwm.get(b["symbol"], "")]
+        if fresh:
+            self.write_bars(fresh)
+            for b in fresh:
+                if b["ts"] > self.bar_hwm.get(b["symbol"], ""):
+                    self.bar_hwm[b["symbol"]] = b["ts"]
+
+        return len(quotes), len(fresh)
+
+    def write_bars(self, bars: list[dict]) -> None:
+        for i in range(0, len(bars), 500):
+            self.db.table("price_bars").upsert(
+                bars[i : i + 500], on_conflict="symbol,interval,ts"
+            ).execute()
 
     def run_matching(self) -> dict | None:
         try:
@@ -98,28 +165,23 @@ class Worker:
             log.error("match_orders failed: %s", exc)
             return None
 
-    def backfill_bars(self, symbols: list[str]) -> int:
+    def refresh_history(self, symbols: list[str]) -> int:
         """
-        Chart history. Intraday minutes for the live view, daily bars for the
-        longer ranges. Chunked upserts keep each request small.
+        The longer chart ranges (5D and 1M-1Y). Bulk-downloaded per interval
+        rather than per symbol -- the old per-symbol loop was 3 requests x N
+        symbols and took ~30s, which delayed the next price tick.
+
+        The 1m series is NOT refreshed here; it comes from the quote download
+        on every cycle.
         """
         written = 0
-        plans = [("1d", "1m"), ("5d", "5m"), ("1y", "1d")]
-
-        for symbol in symbols:
-            for period, interval in plans:
-                bars = fetch_bars(symbol, period, interval)
-                if not bars:
-                    continue
-                for i in range(0, len(bars), 500):
-                    self.db.table("price_bars").upsert(
-                        bars[i : i + 500], on_conflict="symbol,interval,ts"
-                    ).execute()
+        for period, interval in (("5d", "5m"), ("1y", "1d")):
+            bars = fetch_bars_bulk(symbols, period, interval, self.cfg.batch_size)
+            if bars:
+                self.write_bars(bars)
                 written += len(bars)
-
             if not _running:
                 break
-
         return written
 
     def enrich_profiles(self) -> int:
@@ -173,14 +235,16 @@ class Worker:
     def run(self) -> None:
         log.info("Xavage worker starting - %s", self.cfg.supabase_url)
         log.info(
-            "cadence: %ss live / %ss idle | bars every %ss",
-            self.cfg.poll_interval, self.cfg.idle_interval, self.cfg.bar_interval,
+            "cadence: %ss live / %ss idle | history refresh every %ss",
+            self.cfg.poll_interval, self.cfg.idle_interval, self.cfg.history_interval,
         )
 
         while _running:
             started = time.monotonic()
             self.cycle += 1
             state = session_state()
+            mode = self.game_hours_mode()
+            live = self.is_live(state, mode)
 
             try:
                 symbols = self.universe()
@@ -195,7 +259,7 @@ class Worker:
                     self.refresh_prev_closes(symbols)
                     self.last_closes_run = time.monotonic()
 
-                pushed = self.push_quotes(symbols)
+                pushed, new_bars = self.push_market_data(symbols)
                 self.heartbeat()
 
                 matched = self.run_matching() if pushed else None
@@ -208,11 +272,11 @@ class Worker:
                     self.snapshot()
                     self.last_snapshot = time.monotonic()
 
-                # Bars and profiles are expensive; run them off the hot path.
-                if time.monotonic() - self.last_bar_run > self.cfg.bar_interval:
-                    count = self.backfill_bars(symbols)
-                    self.last_bar_run = time.monotonic()
-                    log.info("bar backfill wrote %d rows", count)
+                # Long chart ranges only; the 1m series rides the quote download.
+                if time.monotonic() - self.last_history_run > self.cfg.history_interval:
+                    count = self.refresh_history(symbols)
+                    self.last_history_run = time.monotonic()
+                    log.info("history refresh wrote %d rows", count)
 
                 if time.monotonic() - self.last_profile_run > 600:
                     enriched = self.enrich_profiles()
@@ -224,10 +288,12 @@ class Worker:
                 fills = (matched or {}).get("filled") if isinstance(matched, dict) else None
 
                 log.info(
-                    "cycle %d | %s | %d quotes | %s | %.2fs",
+                    "cycle %d | %s%s | %d quotes | %d new bars | %s | %.2fs",
                     self.cycle,
                     state,
+                    "" if live else f" (idle, mode={mode})",
                     pushed,
+                    new_bars,
                     f"{fills} fill(s)" if fills else "no fills",
                     elapsed,
                 )
@@ -237,7 +303,7 @@ class Worker:
             except Exception as exc:  # noqa: BLE001 - the loop must survive anything
                 log.exception("cycle failed: %s", exc)
 
-            interval = self.cfg.poll_interval if state == "regular" else self.cfg.idle_interval
+            interval = self.cfg.poll_interval if live else self.cfg.idle_interval
             sleep_for = max(0.5, interval - (time.monotonic() - started))
             for _ in range(int(sleep_for * 2)):
                 if not _running:

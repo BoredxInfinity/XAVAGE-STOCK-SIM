@@ -149,19 +149,25 @@ def fetch_daily_closes(symbols: list[str], batch_size: int = 60) -> dict[str, fl
     return closes
 
 
-def fetch_quotes_fast(
+def fetch_intraday(
     symbols: list[str],
     batch_size: int = 60,
     prev_closes: dict[str, float] | None = None,
-) -> list[dict]:
+    bars_per_symbol: int = 500,
+) -> tuple[list[dict], list[dict]]:
     """
-    High-frequency path: one bulk minute-bar download for the whole batch.
+    High-frequency path. ONE bulk minute-bar download per batch yields both the
+    live quote and the intraday chart series -- the frame we need for the price
+    already *is* the chart data, so re-downloading it separately would double the
+    requests and leave the chart staler than the price.
 
-    Avoids the per-symbol .info request (slow and rate-limited). Market state
-    comes from the exchange clock; previous closes come from `prev_closes`,
-    which the worker refreshes from daily bars a few times a day.
+    prepost=True matters: with it off, the newest bar during pre-market is
+    yesterday's 16:00 close, so the chart sits ~16h behind a live price.
+
+    Returns (quotes, bars_1m).
     """
     out: list[dict] = []
+    bars: list[dict] = []
     stamp = datetime.now(timezone.utc)
     state = normalise_state(None)
     prev_closes = prev_closes or {}
@@ -236,8 +242,83 @@ def fetch_quotes_fast(
                     "quote_time": stamp.isoformat(),
                     "updated_at": stamp.isoformat(),
                 })
+
+                # Same frame -> the 1m chart series, free of extra requests.
+                bars.extend(_rows_to_bars(symbol, "1m", sub.tail(bars_per_symbol)))
             except Exception as exc:  # noqa: BLE001
                 log.debug("skipping %s in bulk parse: %s", symbol, exc)
+                continue
+
+    return out, bars
+
+
+def _rows_to_bars(symbol: str, interval: str, frame) -> list[dict]:
+    """Convert an OHLCV frame into price_bars rows, normalised to UTC."""
+    rows: list[dict] = []
+    for ts, row in frame.iterrows():
+        close = _clean(row.get("Close"))
+        if close is None or close <= 0:
+            continue
+
+        moment = ts.to_pydatetime()
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+
+        rows.append({
+            "symbol": symbol,
+            "interval": interval,
+            "ts": moment.astimezone(timezone.utc).isoformat(),
+            "o": round(_clean(row.get("Open")) or close, 6),
+            "h": round(_clean(row.get("High")) or close, 6),
+            "l": round(_clean(row.get("Low")) or close, 6),
+            "c": round(close, 6),
+            "v": int(_clean(row.get("Volume")) or 0),
+        })
+    return rows
+
+
+def fetch_bars_bulk(
+    symbols: list[str], period: str, interval: str, batch_size: int = 60,
+) -> list[dict]:
+    """
+    Longer chart ranges (5m, 1d) for the whole universe in one download per
+    batch, rather than one request per symbol per range.
+    """
+    intraday = interval.endswith("m") or interval.endswith("h")
+    out: list[dict] = []
+
+    for batch in _chunks(symbols, batch_size):
+        try:
+            frame = yf.download(
+                tickers=" ".join(batch),
+                period=period,
+                interval=interval,
+                group_by="ticker",
+                auto_adjust=False,
+                prepost=intraday,
+                threads=True,
+                progress=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("bulk bar download failed (%s/%s): %s", period, interval, exc)
+            continue
+
+        if frame is None or frame.empty:
+            continue
+
+        for symbol in batch:
+            try:
+                sub = frame if len(batch) == 1 else (
+                    frame[symbol] if symbol in frame.columns.get_level_values(0) else None
+                )
+                if sub is None:
+                    continue
+                sub = sub.dropna(subset=["Close"])
+                if sub.empty:
+                    continue
+                out.extend(_rows_to_bars(symbol, interval, sub))
+            except Exception as exc:  # noqa: BLE001
+                log.debug("bar parse failed for %s: %s", symbol, exc)
                 continue
 
     return out

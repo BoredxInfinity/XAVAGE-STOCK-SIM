@@ -45,7 +45,7 @@ insert into public.instruments (symbol, name, exchange, asset_type, sector) valu
   ('PLTR','Palantir Technologies Inc.','NASDAQ','EQUITY','Technology'),
   ('UBER','Uber Technologies Inc.','NYSE','EQUITY','Technology'),
   ('SHOP','Shopify Inc.','NYSE','EQUITY','Technology'),
-  ('SQ','Block Inc.','NYSE','EQUITY','Technology'),
+  ('XYZ','Block, Inc.','NYSE','EQUITY','Technology'),   -- formerly SQ; reticker'd
   ('COIN','Coinbase Global Inc.','NASDAQ','EQUITY','Financial Services'),
   ('SNOW','Snowflake Inc.','NYSE','EQUITY','Technology'),
   ('ABNB','Airbnb Inc.','NASDAQ','EQUITY','Consumer Cyclical'),

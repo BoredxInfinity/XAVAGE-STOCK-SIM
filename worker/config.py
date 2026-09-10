@@ -22,7 +22,7 @@ class Config:
     service_role_key: str
     poll_interval: int
     idle_interval: int
-    bar_interval: int
+    history_interval: int
     batch_size: int
     max_symbols: int
 
@@ -42,7 +42,7 @@ class Config:
             service_role_key=key,
             poll_interval=_int("POLL_INTERVAL_SECONDS", 5),
             idle_interval=_int("IDLE_INTERVAL_SECONDS", 120),
-            bar_interval=_int("BAR_INTERVAL_SECONDS", 300),
+            history_interval=_int("HISTORY_INTERVAL_SECONDS", 1800),
             batch_size=_int("BATCH_SIZE", 60),
             max_symbols=_int("MAX_SYMBOLS", 400),
         )
