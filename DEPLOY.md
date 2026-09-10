@@ -155,3 +155,45 @@ Check the log shows a healthy cycle:
 Migrations are forward-only. To change the schema mid-event, add a new
 migration and `db push` again — never edit an applied migration file, since the
 remote already has it and the checksums will diverge.
+
+---
+
+## Reading `supabase db advisors`
+
+Running `npx supabase db advisors --linked --type security --level warn` reports
+**14 findings of one kind**, and they are expected. Don't "fix" them by revoking
+grants — that would break the game.
+
+```
+Signed-In Users Can Execute SECURITY DEFINER Function   (x14)
+```
+
+The linter flags every `SECURITY DEFINER` function callable by `authenticated`.
+In this app those functions *are* the API, deliberately:
+
+| Function | Why `authenticated` can call it |
+| --- | --- |
+| `place_order`, `cancel_order` | The only way to trade. Each loads the caller's profile from `auth.uid()` and scopes everything to their own team. |
+| `get_portfolio`, `get_market_status` | Read APIs, scoped to the caller's team. |
+| `mark_password_changed`, `touch_login` | Act only on the caller's own row. |
+| `get_leaderboard` | Gated on `private.is_admin()` OR the `leaderboard_visible_to_participants` setting. |
+| the 7 `admin_*` functions | Each calls `private.require_admin()` as its first statement and raises `42501` for everyone else. |
+
+This *has* to work this way: an admin still authenticates as the Postgres role
+`authenticated`, so there is no separate role to grant to. Role checks belong
+inside the function, which is the pattern Supabase itself prescribes.
+
+Verified against the live project with a real participant JWT, bypassing the app:
+
+| Probe | Result |
+| --- | --- |
+| `select * from teams` | 1 row — only their own team |
+| `select * from profiles` | 1 row — only themselves |
+| `select * from audit_log` / `settings_history` | `[]` |
+| `get_leaderboard()` | `42501 Rankings are not available.` |
+| `admin_adjust_cash / create_team / update_settings / set_team_frozen` | `42501 Administrator access required.` |
+| `UPDATE teams SET cash WHERE id=<own>` | `42501 permission denied` |
+| `INSERT INTO orders` | `42501 permission denied` |
+| `get_portfolio()` / `get_market_status()` | work normally |
+
+If a future advisor run shows anything **other** than those 14, investigate it.

@@ -29,6 +29,10 @@ port = 54324
 
 [auth]
 enabled = true
+# TODO after the Vercel deploy: set site_url to the production URL and add it
+# to additional_redirect_urls, then re-run `supabase config push`. These only
+# affect email redirect links, and this game uses no email flows, so localhost
+# here is harmless in the meantime.
 site_url = "http://127.0.0.1:3000"
 additional_redirect_urls = ["http://127.0.0.1:3000"]
 jwt_expiry = 3600
