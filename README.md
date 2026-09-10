@@ -66,6 +66,10 @@ students refreshing does not become a hundred calls to Yahoo.
 
 ---
 
+> **Deploying?** Follow [`DEPLOY.md`](DEPLOY.md) — it covers the Supabase push,
+> the auth toggles that are easy to get wrong, Vercel env vars, and a pre-event
+> checklist.
+
 ## Setup
 
 ### 1. Supabase
