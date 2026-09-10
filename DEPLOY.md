@@ -223,3 +223,32 @@ Verified against the live project with a real participant JWT, bypassing the app
 | `get_portfolio()` / `get_market_status()` | work normally |
 
 If a future advisor run shows anything **other** than those 14, investigate it.
+
+---
+
+## Dependency security
+
+`next` is **pinned exactly** (no `^`) so an unreviewed patch can't land on the
+next install mid-competition. Same reasoning for the rest of the lockfile —
+commit `package-lock.json` and don't regenerate it during the event.
+
+Current posture (`npm audit`):
+
+| Package | Status |
+| --- | --- |
+| `next` 15.5.25 | All critical and high advisories resolved, including the App Router **Middleware/Proxy bypass** family — directly relevant, since middleware is what gates `/admin`. |
+| `postcss` | Advisories remain but are **not reachable here**: all concern attacker-controlled CSS / `sourceMappingURL`, and postcss only runs at build time over hand-authored CSS. No user CSS is ever processed. |
+| `sharp` | Advisories remain but are **not reachable here**: they're triggered through Next's Image Optimizer. This app uses no `next/image` and sets no `images` config, so remote optimization is rejected outright — and on Vercel it runs on their infrastructure regardless. |
+
+Clearing the last two requires **Next 16**, a semver-major upgrade. That is not
+worth attempting days before a live event; revisit after the competition.
+
+Re-check at any time with:
+
+```bash
+npm audit
+```
+
+If a *new* critical or high lands on `next` itself during the event, take the
+patch — `npm install next@<patched-15.x>`, then `npm run build` to confirm, and
+push. Vercel redeploys on push.
