@@ -37,6 +37,35 @@ class Config:
                 "Copy worker/.env.example to worker/.env and fill them in."
             )
 
+        # Pasting a multi-line block into a single dashboard field is an easy
+        # mistake, and the resulting failure is deeply unobvious: the key goes
+        # out as an HTTP header, so you get "Illegal header value" (or, over
+        # HTTP/2, an opaque stream reset) on every request instead of anything
+        # resembling "your config is wrong". Catch it here, at startup.
+        for name, value in (("SUPABASE_URL", url), ("SUPABASE_SERVICE_ROLE_KEY", key)):
+            if any(c in value for c in "\n\r\t") or " " in value:
+                first = value.splitlines()[0] if value.splitlines() else ""
+                raise SystemExit(
+                    f"{name} contains whitespace or a line break, so it cannot be sent "
+                    f"as an HTTP header.\n"
+                    f"It looks like more than one variable was pasted into this field.\n"
+                    f"  starts with: {first[:40]}...\n"
+                    f"  length: {len(value)} characters\n"
+                    f"Set {name} to a single value on one line, with each other "
+                    f"variable in its own field."
+                )
+
+        if not url.startswith("https://") and not url.startswith("http://"):
+            raise SystemExit(f"SUPABASE_URL must start with https:// (got: {url[:40]})")
+
+        # A Supabase service-role key is a JWT: three dot-separated segments.
+        if key.count(".") != 2:
+            raise SystemExit(
+                "SUPABASE_SERVICE_ROLE_KEY does not look like a JWT (expected three "
+                f"dot-separated parts, found {key.count('.') + 1}).\n"
+                "Copy the service_role key from Supabase -> Project Settings -> API."
+            )
+
         return cls(
             supabase_url=url,
             service_role_key=key,
