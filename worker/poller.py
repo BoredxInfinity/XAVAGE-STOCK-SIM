@@ -77,10 +77,43 @@ def _stop(signum, _frame):
     _running = False
 
 
+def force_http1(db: Client) -> bool:
+    """
+    Make PostgREST talk HTTP/1.1 instead of HTTP/2.
+
+    postgrest-py hardcodes http2=True when it builds its httpx client. Some
+    egress paths -- Railway's among them -- have the intermediate proxy reset
+    every HTTP/2 stream, so *every* request dies with
+    RemoteProtocolError(StreamReset), even a single-row select. It is not load
+    related and retrying never helps, because the whole connection is affected.
+    The same image against the same project works fine from a laptop, which is
+    what makes this so easy to misdiagnose as flakiness.
+
+    postgrest exposes `session`, so swap in an equivalent HTTP/1.1 client,
+    carrying over the base URL, auth headers and timeout. HTTP/1.1 costs a
+    little multiplexing we were never using at this request rate.
+    """
+    try:
+        old = db.postgrest.session
+        db.postgrest.session = httpx.Client(
+            base_url=old.base_url,
+            headers=old.headers,
+            timeout=old.timeout,
+            follow_redirects=True,
+            http2=False,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 - never block startup on this
+        log.warning("could not force HTTP/1.1, continuing with the default: %s", exc)
+        return False
+
+
 class Worker:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.db: Client = create_client(cfg.supabase_url, cfg.service_role_key)
+        if force_http1(self.db):
+            log.info("PostgREST pinned to HTTP/1.1")
         self.last_state = session_state()
         self.last_snapshot = 0.0
         self.last_profile_run = 0.0
