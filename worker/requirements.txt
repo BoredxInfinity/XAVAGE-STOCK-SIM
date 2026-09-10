@@ -1,4 +1,7 @@
+# Direct dependencies. Versions are the ones actually exercised against the
+# live project -- see requirements.lock.txt for the full resolved tree, which
+# is what the Docker image installs.
 yfinance==1.7.0
-supabase==2.20.0
+supabase==2.31.0
 python-dotenv==1.1.1
-pandas==2.3.2
+pandas==3.0.5

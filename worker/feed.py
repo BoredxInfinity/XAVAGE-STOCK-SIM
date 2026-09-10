@@ -8,12 +8,25 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import tempfile
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import yfinance as yf
 
 from market import NY, REGULAR_CLOSE, REGULAR_OPEN, normalise_state
+
+# yfinance caches exchange timezones on disk. Its default location can be
+# unwritable or race between threads in a container ("Failed to create
+# TzCache"), which is harmless but noisy and costs a lookup per symbol.
+# Point it somewhere reliably writable instead.
+try:
+    _CACHE = os.environ.get("YF_CACHE_DIR", os.path.join(tempfile.gettempdir(), "yfinance-cache"))
+    os.makedirs(_CACHE, exist_ok=True)
+    yf.set_tz_cache_location(_CACHE)
+except Exception:  # noqa: BLE001 - caching is an optimisation, never fatal
+    pass
 
 log = logging.getLogger("xavage.feed")
 
