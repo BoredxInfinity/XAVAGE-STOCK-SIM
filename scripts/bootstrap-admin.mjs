@@ -56,7 +56,9 @@ const { data, error } = await admin.auth.admin.createUser({
   email: email.toLowerCase(),
   password,
   email_confirm: true,
-  user_metadata: { display_name: displayName, role: "admin" },
+  // display_name only -- user_metadata is user-editable, so the admin role is
+  // granted by the privileged UPDATE below, never by a metadata claim.
+  user_metadata: { display_name: displayName },
 });
 
 if (error) {

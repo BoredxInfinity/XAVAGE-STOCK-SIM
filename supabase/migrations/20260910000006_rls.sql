@@ -188,6 +188,17 @@ to service_role;
 
 -- Fallback profile creation: keeps auth.users and profiles in lockstep even
 -- if a user is created outside the admin API.
+--
+-- SECURITY: raw_user_meta_data is USER-EDITABLE (any signed-in user can rewrite
+-- it via auth.updateUser). It must never decide privilege. So this trigger hard
+-- codes role = 'participant' and must_change_password = true, and ignores any
+-- 'role' the caller put in metadata -- otherwise a self-signup carrying
+-- {"role":"admin"} would mint an administrator, handing out the rankings and
+-- every admin RPC. Genuine admins are promoted afterwards by an explicit
+-- service-role UPDATE (see /api/admin/users and scripts/bootstrap-admin.mjs),
+-- which is a path a participant cannot reach.
+-- display_name is cosmetic, never an authorization input, so a metadata
+-- fallback is fine there.
 create or replace function private.handle_new_user()
 returns trigger
 language plpgsql
@@ -200,8 +211,8 @@ begin
     new.id,
     coalesce(new.email, ''),
     coalesce(nullif(new.raw_user_meta_data ->> 'display_name', ''), split_part(coalesce(new.email, 'trader'), '@', 1)),
-    coalesce((new.raw_user_meta_data ->> 'role')::public.app_role, 'participant'),
-    coalesce((new.raw_user_meta_data ->> 'must_change_password')::boolean, true)
+    'participant',   -- never from metadata
+    true             -- never from metadata; admins clear it explicitly
   )
   on conflict (id) do nothing;
   return new;

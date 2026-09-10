@@ -55,7 +55,10 @@ export async function POST(request: Request) {
     email: email.toLowerCase(),
     password,
     email_confirm: true, // organiser-provisioned: no confirmation email round-trip
-    user_metadata: { display_name, role },
+    // display_name only. `role` deliberately does NOT go in user_metadata:
+    // that field is user-editable, so nothing authorization-related belongs in
+    // it. The real role is set by the service-role UPDATE below.
+    user_metadata: { display_name },
   });
 
   if (error || !created.user) {
