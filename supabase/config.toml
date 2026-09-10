@@ -22,7 +22,8 @@ enabled = true
 enabled = true
 port = 54323
 
-[inbucket]
+# Local mail catcher, so password flows can be inspected without a real inbox.
+[local_smtp]
 enabled = true
 port = 54324
 
