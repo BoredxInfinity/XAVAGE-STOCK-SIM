@@ -29,11 +29,30 @@ from config import Config
 from feed import fetch_bars_bulk, fetch_daily_closes, fetch_intraday, fetch_profile
 from market import just_closed, now_ny, session_state
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-7s %(name)s  %(message)s",
-    datefmt="%H:%M:%S",
-)
+# Route INFO/DEBUG to stdout and WARNING+ to stderr.
+#
+# Python's logging writes everything to stderr by default, and Railway tags
+# every stderr line "[err]" -- so a perfectly healthy worker produces a wall of
+# red and a routine cycle line is indistinguishable from a real failure. With
+# this split, "[err]" in Railway means something actually went wrong.
+_FORMAT = logging.Formatter("%(asctime)s  %(levelname)-7s %(name)s  %(message)s", "%H:%M:%S")
+
+_stdout = logging.StreamHandler(sys.stdout)
+_stdout.setFormatter(_FORMAT)
+_stdout.setLevel(logging.DEBUG)
+_stdout.addFilter(lambda record: record.levelno < logging.WARNING)
+
+_stderr = logging.StreamHandler(sys.stderr)
+_stderr.setFormatter(_FORMAT)
+_stderr.setLevel(logging.WARNING)
+
+logging.basicConfig(level=logging.INFO, handlers=[_stdout, _stderr])
+
+# yfinance logs individual ticker timeouts at ERROR. They are expected and
+# self-healing (the symbol is retried next cycle), so keep them out of the
+# error stream where they would look like worker failures.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
 log = logging.getLogger("xavage.worker")
 
 _running = True
