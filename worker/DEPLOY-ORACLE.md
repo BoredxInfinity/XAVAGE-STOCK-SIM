@@ -83,31 +83,37 @@ explicitly — verified working on a stock `oraclelinux:9` image.
 
 ## 4. Run the setup script
 
-### On a 1 GB E2.1.Micro — use the lean path
-
-Measured peak for this worker is **~320 MB**. On a 1 GB box that fits, but the
-Docker daemon's ~70 MB is worth not spending, so there's a second script that
-runs the worker directly under **systemd** with no Docker at all:
+Docker is the faster route on a small instance, including the 1 GB
+E2.1.Micro. The `python:3.12-slim` base image already contains Python, so the
+VM never installs `python3.12`, `python3.12-devel` or `gcc` from the distro
+repos — which is the slow part of a from-source build on 1 OCPU.
 
 ```bash
-nano setup.sh        # paste worker/setup-oracle-micro.sh
+nano setup.sh        # paste worker/setup-oracle.sh
 bash setup.sh
 ```
 
-It adds 2 GB of swap, builds a virtualenv, writes the service, and enables it
-on boot. It also sets `MemoryMax=700M` so a runaway gets restarted by systemd
-rather than letting the kernel OOM killer pick a victim — which on a 1 GB box
-could be `sshd`, locking you out of the machine.
+The script detects dnf vs apt, installs Docker, adds swap, builds, and runs the
+container with `--restart unless-stopped` so it survives reboots.
+
+Sizing: the image is **173 MB**, the running worker peaks around **320 MB**, and
+the container is capped at `--memory 700m`. That fits 1 GB with Ubuntu or
+Oracle Linux underneath, and the swap covers the build, which peaks higher than
+the steady state.
 
 Manage it with:
 
 ```bash
-sudo systemctl status xavage-worker
-sudo journalctl -u xavage-worker -f        # follow logs
-sudo systemctl restart xavage-worker
+sudo docker logs -f xavage-worker
+sudo docker restart xavage-worker
+sudo docker stats --no-stream xavage-worker    # live memory use
 ```
 
-### On a larger Ampere instance — Docker is fine
+### If you'd rather not run Docker
+
+`worker/setup-oracle-micro.sh` runs the worker directly under systemd with a
+virtualenv instead. It saves the ~70 MB the Docker daemon uses, but installs a
+toolchain from the distro repos and is noticeably slower to set up on 1 OCPU.
 
 On the VM:
 
