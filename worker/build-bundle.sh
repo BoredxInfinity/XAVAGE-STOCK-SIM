@@ -40,30 +40,55 @@ command -v python3 >/dev/null || { echo "python3 required" >&2; exit 1; }
 if [ "${SKIP_RPMS:-0}" = "1" ]; then
   say "SKIP_RPMS=1 -- not bundling an interpreter"
 else
-  say "Resolving python$PYDOT RPMs from Oracle's public repo"
-  REPO=https://yum.oracle.com/repo/OracleLinux/OL9/appstream/x86_64
+  say "Resolving python$PYDOT RPMs from Oracle's public repos"
   mkdir -p "$STAGE/xavage-worker/rpms"
 
-  curl -fsSL --max-time 60 "$REPO/repodata/repomd.xml" -o "$STAGE/repomd.xml"
-  PRIMARY=$(python3 - "$STAGE/repomd.xml" <<'EOF'
-import re, sys
-s = open(sys.argv[1]).read()
-for m in re.finditer(r'<data type="primary">.*?<location href="([^"]+)"', s, re.S):
-    print(m.group(1)); break
-EOF
-)
-  [ -n "$PRIMARY" ] || { echo "could not find primary.xml in repomd" >&2; exit 1; }
-  curl -fsSL --max-time 300 "$REPO/$PRIMARY" -o "$STAGE/primary.xml.gz"
-
-  python3 - "$STAGE/primary.xml.gz" "$REPO" "$STAGE/xavage-worker/rpms" <<'EOF'
-import gzip, sys, urllib.request
+  python3 - "$STAGE/xavage-worker/rpms" <<'EOF'
+import gzip, io, os, re, subprocess, sys, tempfile
 import xml.etree.ElementTree as ET
 
-path, repo, dest = sys.argv[1], sys.argv[2], sys.argv[3]
+dest = sys.argv[1]
 NS = {'c': 'http://linux.duke.edu/metadata/common'}
+# AppStream only, and deliberately. Every package in the closure below is in
+# it -- including libnsl2 and mpdecimal, which live in BaseOS on stock RHEL.
+# Adding baseos/latest as a second source costs a 134 MB primary.xml.gz
+# (it carries every historical build since OL9 GA) against AppStream's 8 MB,
+# which turns a fast build into a very long one for no packages gained.
+REPOS = ["https://yum.oracle.com/repo/OracleLinux/OL9/appstream/x86_64"]
+
+# The dependency closure, established from what `rpm -Uvh` actually rejected
+# on a real OL9 instance rather than assumed. The base image's python3.9
+# covers most of python3.11's shared libraries, but not these two: RHEL 9's
+# python3.9 bundles its own _decimal where python3.11 links the system
+# mpdecimal (libmpdec.so.3), and nothing in the base set provides
+# libnsl.so.3. Everything else python3.11-libs wants -- openssl, sqlite,
+# gdbm, tirpc, ncurses, readline, uuid, expat, ffi, lzma, bz2, zlib -- is
+# already there, which rpm confirmed by not complaining about them.
 WANT = {"python3.11", "python3.11-libs", "python3.11-pip-wheel",
-        "python3.11-setuptools-wheel"}
+        "python3.11-setuptools-wheel", "mpdecimal", "libnsl2"}
 ARCH = {"x86_64", "noarch"}
+
+
+def fetch(url, dest=None, timeout=300):
+    """Download with curl, not urllib.
+
+    Measured against yum.oracle.com on the same machine in the same second:
+    curl 5.6 MB/s, urllib 0.06 MB/s -- a ~90x difference that turns an 8 MB
+    index into a multi-minute wait and looks exactly like a hang. The cause
+    is somewhere in urllib's connection setup and not worth chasing; curl
+    ships with every macOS and Linux host this script runs on.
+    """
+    out = dest or os.path.join(tempfile.gettempdir(), "xavage-fetch.tmp")
+    subprocess.run(
+        ["curl", "-fsSL", "--max-time", str(timeout), "-o", out, url],
+        check=True,
+    )
+    if dest:
+        return None
+    with open(out, "rb") as fh:
+        data = fh.read()
+    os.unlink(out)
+    return data
 
 
 def _seg(s):
@@ -99,34 +124,43 @@ def vercmp(a, b):
     return (la > lb) - (la < lb)
 
 
+def newer(evr, prev):
+    if prev is None:
+        return True
+    c = vercmp(evr[0], prev[0])
+    return c > 0 or (c == 0 and vercmp(evr[1], prev[1]) > 0)
+
+
 best = {}
-# The repo keeps every historical build, so take the newest EVR per name
-# rather than whatever the parser happens to see last.
-with gzip.open(path) as fh:
-    for _, el in ET.iterparse(fh, events=("end",)):
-        if el.tag != '{http://linux.duke.edu/metadata/common}package':
-            continue
-        name = el.findtext('c:name', namespaces=NS)
-        arch = el.findtext('c:arch', namespaces=NS)
-        if name in WANT and arch in ARCH:
-            v = el.find('c:version', NS)
-            evr = (v.get('ver'), v.get('rel'))
-            loc = el.find('c:location', NS).get('href')
-            prev = best.get(name)
-            if prev is None or vercmp(evr[0], prev[0][0]) > 0 or (
-                    evr[0] == prev[0][0] and vercmp(evr[1], prev[0][1]) > 0):
-                best[name] = (evr, loc)
-        el.clear()
+for repo in REPOS:
+    md = fetch(f"{repo}/repodata/repomd.xml", timeout=60).decode()
+    m = re.search(r'<data type="primary">.*?<location href="([^"]+)"', md, re.S)
+    if not m:
+        sys.exit(f"no primary.xml in {repo}")
+    raw = fetch(f"{repo}/{m.group(1)}")
+    # The repo keeps every historical build, so take the newest EVR per name
+    # rather than whatever the parser happens to see last.
+    with gzip.open(io.BytesIO(raw)) as fh:
+        for _, el in ET.iterparse(fh, events=("end",)):
+            if el.tag != '{http://linux.duke.edu/metadata/common}package':
+                continue
+            name = el.findtext('c:name', namespaces=NS)
+            if name in WANT and el.findtext('c:arch', namespaces=NS) in ARCH:
+                v = el.find('c:version', NS)
+                evr = (v.get('ver'), v.get('rel'))
+                prev = best.get(name)
+                if newer(evr, prev[0] if prev else None):
+                    best[name] = (evr, f"{repo}/{el.find('c:location', NS).get('href')}")
+            el.clear()
 
 missing = WANT - set(best)
 if missing:
     sys.exit(f"could not resolve: {', '.join(sorted(missing))}")
 
 total = 0
-for name, ((ver, rel), loc) in sorted(best.items()):
-    fn = loc.rsplit("/", 1)[-1]
-    urllib.request.urlretrieve(f"{repo}/{loc}", f"{dest}/{fn}")
-    import os
+for name, ((ver, rel), url) in sorted(best.items()):
+    fn = url.rsplit("/", 1)[-1]
+    fetch(url, dest=f"{dest}/{fn}")
     total += os.path.getsize(f"{dest}/{fn}")
     print(f"    {name:30s} {ver}-{rel}")
 print(f"    -> {total/1048576:.1f} MB of RPMs")
