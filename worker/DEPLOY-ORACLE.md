@@ -34,11 +34,19 @@ after that only sends what the database has not already seen.
 | Name | `xavage-worker` |
 | Image | **Oracle Linux 9** (the default) |
 | Shape | *Change shape* → **AMD** → `VM.Standard.E2.1.Micro` |
+| Capacity type | **On-demand capacity** — see below |
 | Networking | Leave defaults — it creates a VCN and assigns a public IPv4 |
 | SSH keys | **Generate a key pair** and *download the private key* |
 
 Look for the **"Always Free eligible"** badge on the shape. If it isn't there,
 you're about to create something billable.
+
+**Capacity type** lives under *Placement*, sometimes behind "Show advanced
+options". Leave it on **On-demand capacity**: it is the default, and the only
+one Always Free applies to. *Preemptible capacity* is cheaper but Oracle
+reclaims it with about 30 seconds' notice, which is fatal for a worker that has
+to stay up for the length of a competition. *Capacity reservation* needs a
+reservation you have already paid for.
 
 > **Save the private key before leaving the page.** Oracle will not show it
 > again, and without it you cannot get into the machine.
