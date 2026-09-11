@@ -1,214 +1,188 @@
 # Running the price worker on Oracle Cloud (Always Free)
 
-Oracle's **Always Free** tier doesn't expire, which suits a multi-week
-competition better than trial credits. This walks through the console.
-
-> Oracle changes the console layout regularly, so treat the labels below as
-> "look for something like this" rather than exact text. The sequence is stable
-> even when the wording moves.
+Target: **VM.Standard.E2.1.Micro**, Oracle Linux, 1 OCPU / 1 GB RAM, free
+forever. The worker is sized for exactly that box — one dependency, no Docker,
+no compiler, no third-party repos. Setup is a clone and one script; every
+update after that is `git pull` and a restart.
 
 ---
 
-## 1. Pick the shape you want
+## What it costs to run
 
-Always Free gives you **either** of these, and the ARM one is far more generous:
+Measured against a 105-symbol universe:
 
-| Shape | Always Free allowance | Verdict for this worker |
-| --- | --- | --- |
-| **VM.Standard.A1.Flex** (Ampere, ARM) | 4 OCPU + 24 GB RAM total | **Use this.** 1 OCPU / 6 GB is plenty |
-| VM.Standard.E2.1.Micro (AMD) | 2 instances, 1 OCPU + 1 GB each | Works, but 1 GB is tight with pandas |
+| | |
+| --- | --- |
+| Packages installed | **23** (`yfinance` and its own requirements) |
+| Download size | ~48 MB of wheels |
+| Resident memory, steady state | **~260 MB** |
+| Cycle time, steady state | **~4 s**, almost all of it waiting on Yahoo |
+| Rows written per cycle | ~105 quotes + ~105 bars |
 
-The worker's dependencies are all ARM-clean — `python:3.12-slim` publishes
-`linux/arm64`, and pandas, numpy and curl_cffi all ship `aarch64` wheels — so
-nothing compiles from source on Ampere.
+The first cycle is the outlier: it backfills the whole chart history (~52k
+minute bars plus ~107k longer-range bars) and takes a few minutes. Every cycle
+after that only sends what the database has not already seen.
 
 ---
 
-## 2. Create the instance
+## 1. Create the instance
 
 **Menu → Compute → Instances → Create instance**
 
 | Field | Value |
 | --- | --- |
 | Name | `xavage-worker` |
-| Image | **Oracle Linux 9** (the default) or Ubuntu 24.04 — both work |
-| Shape | *Change shape* → **Ampere** → `VM.Standard.A1.Flex` → **1 OCPU, 6 GB** |
+| Image | **Oracle Linux 9** (the default) |
+| Shape | *Change shape* → **AMD** → `VM.Standard.E2.1.Micro` |
 | Networking | Leave defaults — it creates a VCN and assigns a public IPv4 |
 | SSH keys | **Generate a key pair** and *download the private key* |
 
 Look for the **"Always Free eligible"** badge on the shape. If it isn't there,
 you're about to create something billable.
 
-> **Save the private key somewhere permanent before leaving the page.** Oracle
-> will not show it again, and without it you cannot get into the machine.
+> **Save the private key before leaving the page.** Oracle will not show it
+> again, and without it you cannot get into the machine.
 
-Click **Create** and wait for the state to go from `PROVISIONING` to
-`RUNNING` (a minute or two). Copy the **Public IP address**.
-
-### If you hit "Out of host capacity"
-
-This is the single most common Always Free frustration — Ampere is heavily
-oversubscribed in popular regions. In order of what actually works:
-
-1. Change the **Availability Domain** (AD-1 / AD-2 / AD-3) and retry.
-2. Ask for **less**: 1 OCPU / 6 GB is far likelier to land than 4 / 24.
-3. Retry later — capacity frees up in waves, often off-peak for your region.
-4. Fall back to **VM.Standard.E2.1.Micro** (AMD). It's only 1 GB, so add swap:
-   ```bash
-   sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
-   sudo mkswap /swapfile && sudo swapon /swapfile
-   echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-   ```
-
-Your **home region is fixed at signup** and Always Free resources only exist
-there, so you can't shop around regions for capacity.
+The Ampere shape (`VM.Standard.A1.Flex`, 4 OCPU / 24 GB) is also Always Free
+and works identically — every dependency publishes `aarch64` wheels. It is just
+far more likely to be out of capacity. The E2.1.Micro is almost always
+available, and this worker fits in it.
 
 ---
 
-## 3. Connect
+## 2. Connect
 
 ```bash
 chmod 600 ~/Downloads/ssh-key-*.key
-ssh -i ~/Downloads/ssh-key-*.key ubuntu@<PUBLIC_IP>
-```
-
-The login user depends on the image: **`opc`** for Oracle Linux (the OCI
-default), **`ubuntu`** for Ubuntu.
-
-The setup script handles both distros. Note that Oracle Linux 9 ships Python
-**3.9** while pandas needs **3.11+**, so the script installs `python3.12`
-explicitly — verified working on a stock `oraclelinux:9` image.
-
----
-
-## 4. Run the setup script
-
-Docker is the faster route on a small instance, including the 1 GB
-E2.1.Micro. The `python:3.12-slim` base image already contains Python, so the
-VM never installs `python3.12`, `python3.12-devel` or `gcc` from the distro
-repos — which is the slow part of a from-source build on 1 OCPU.
-
-```bash
-nano setup.sh        # paste worker/setup-oracle.sh
-bash setup.sh
-```
-
-The script detects dnf vs apt, installs Docker, adds swap, builds, and runs the
-container with `--restart unless-stopped` so it survives reboots.
-
-Sizing: the image is **173 MB**, the running worker peaks around **320 MB**, and
-the container is capped at `--memory 700m`. That fits 1 GB with Ubuntu or
-Oracle Linux underneath, and the swap covers the build, which peaks higher than
-the steady state.
-
-Manage it with:
-
-```bash
-sudo docker logs -f xavage-worker
-sudo docker restart xavage-worker
-sudo docker stats --no-stream xavage-worker    # live memory use
-```
-
-### If you'd rather not run Docker
-
-`worker/setup-oracle-micro.sh` runs the worker directly under systemd with a
-virtualenv instead. It saves the ~70 MB the Docker daemon uses, but installs a
-toolchain from the distro repos and is noticeably slower to set up on 1 OCPU.
-
-On the VM:
-
-```bash
-curl -fsSL -o setup.sh \
-  https://raw.githubusercontent.com/BoredxInfinity/XAVAGE-STOCK-SIM/main/worker/setup-oracle.sh
-bash setup.sh
-```
-
-Because the repo is private, `curl` above will 404. Either paste the script
-contents into `nano setup.sh`, or clone first with a token — the script prompts
-for one anyway.
-
-It installs Docker, clones the repo, asks for your Supabase URL and
-service-role key, builds the image, and starts the container with
-`--restart unless-stopped` so it survives reboots.
-
-It validates the key before writing it — pasting multiple variables into one
-prompt is rejected up front rather than failing later as an unreadable
-`Illegal header value`.
-
----
-
-## Keeping setup alive when you disconnect
-
-The setup takes several minutes and dies with your SSH session. Two ways round it.
-
-### tmux (simplest)
-
-```bash
-sudo dnf install -y tmux          # or: sudo apt-get install -y tmux
-tmux new -s setup
-bash setup.sh                     # answer the prompts
-```
-
-Then press **`Ctrl-B`** then **`D`** to detach. Close the laptop whenever.
-
-Reconnect later and pick up exactly where you left off:
-
-```bash
 ssh -i ~/Downloads/ssh-key-*.key opc@<PUBLIC_IP>
-tmux attach -t setup
 ```
 
-`tmux ls` lists sessions; `exit` inside one ends it.
+`opc` is the Oracle Linux login. (It's `ubuntu` on an Ubuntu image; the setup
+script handles either distro.)
 
-### Fully unattended
+---
 
-Supply the three answers up front and nothing prompts:
+## 3. Install
 
-```bash
-GH_TOKEN='github_pat_...' \
-SUPABASE_URL='https://<ref>.supabase.co' \
-SUPABASE_SERVICE_ROLE_KEY='eyJ...' \
-  nohup bash setup.sh > setup.log 2>&1 &
-```
-
-Disconnect immediately. Check on it later with `tail -f ~/setup.log`.
-
-Start the command with a **space** so the token and key don't land in your
+The repo is private, so clone it with a GitHub personal access token that has
+`repo` scope. Start the line with a **space** so the token stays out of your
 shell history.
 
-> Once setup finishes, none of this matters — the worker runs under systemd,
-> which is independent of your SSH session and restarts on boot. This only
-> covers the install itself.
+```bash
+ git clone https://<YOUR_TOKEN>@github.com/BoredxInfinity/XAVAGE-STOCK-SIM.git ~/XAVAGE-STOCK-SIM
+```
 
-## 5. Confirm it's working
+Then:
 
 ```bash
-sudo docker logs -f --tail 30 xavage-worker
+bash ~/XAVAGE-STOCK-SIM/worker/setup.sh
+```
+
+It asks for your Supabase URL and service-role key (input hidden), and does
+everything else:
+
+1. finds a Python 3.10+ interpreter, installing `python3.11` from Oracle
+   Linux's **own AppStream repo** if there isn't one — see the note below
+2. adds a 2 GB swapfile, since 1 GB with none is asking for an OOM kill
+3. creates a venv in `~/.xavage-venv` and installs `yfinance`
+4. writes `worker/.env` with mode `0600`
+5. **runs one real cycle** and stops if it fails, so a bad key or a blocked
+   egress path shows up right here instead of in a restart loop
+6. installs and starts a `xavage-worker` systemd service
+
+Re-running it is safe — it's also the upgrade path.
+
+### Why it installs python3.11
+
+Oracle Linux 9 ships Python **3.9** as `/usr/bin/python3`, and yfinance cannot
+run on it: `curl_cffi` declares `Requires-Python >=3.10` and pandas 3 wants
+`>=3.11`. `python3.11` is a stock AppStream RPM — the same repo the base image
+already trusts, a prebuilt binary, about 15 seconds. Nothing is compiled and
+no repo is added. If the image already has 3.10+, the script uses that and
+installs nothing.
+
+### Keeping setup alive when you disconnect
+
+The install takes a few minutes and dies with your SSH session.
+
+```bash
+sudo dnf install -y tmux
+tmux new -s setup
+bash ~/XAVAGE-STOCK-SIM/worker/setup.sh
+```
+
+`Ctrl-B` then `D` detaches; `tmux attach -t setup` picks it back up.
+
+Or run it fully unattended:
+
+```bash
+ SUPABASE_URL='https://<ref>.supabase.co' \
+ SUPABASE_SERVICE_ROLE_KEY='eyJ...' \
+   nohup bash ~/XAVAGE-STOCK-SIM/worker/setup.sh > ~/setup.log 2>&1 &
+```
+
+Once it finishes none of this matters — systemd owns the process and restarts
+it on boot.
+
+---
+
+## 4. Confirm it's working
+
+```bash
+journalctl -u xavage-worker -f
 ```
 
 Healthy output:
 
 ```
-PostgREST pinned to HTTP/1.1
-cached 101 previous close(s)
-cycle 1 | regular | 101 quotes | 48017 new bars | no fills | 152.68s
-cycle 2 | regular | 101 quotes | 113 new bars | no fills | 6.06s
+cached 105 previous close(s)
+cycle 1 | closed (idle, mode=regular) | 105 quotes | 52411 new bars | no fills | 229.27s
+cycle 2 | closed (idle, mode=regular) | 105 quotes | 105 new bars | no fills | 5.78s
+cycle 3 | regular | 105 quotes | 105 new bars | 2 fill(s) | 4.22s
 ```
 
-The first cycle is slow — it backfills all chart history. Then check
-**Admin → Overview** in the app: it should read **"Price feed healthy"** with a
-tick timestamp that keeps advancing.
+Cycle 1 is the one-time backfill. From cycle 2 on, "105 new bars" is each
+symbol's still-forming current candle being rewritten, which is what keeps the
+last point on a live chart moving.
+
+Then check **Admin → Overview** in the app: it should read **"Price feed
+healthy"** with a tick timestamp that keeps advancing.
+
+Memory, if you want to watch it:
+
+```bash
+systemctl show xavage-worker -p MemoryCurrent    # bytes
+free -m
+```
 
 ---
 
-## 6. Turn off Railway
+## 5. Day-to-day
 
-Only once Oracle is confirmed healthy. Two workers running at once isn't
-harmful — quote writes are idempotent upserts and `match_orders()` takes an
-advisory lock, so no double-fills — but it doubles the load on Yahoo for
-nothing.
+```bash
+# update to the latest code
+cd ~/XAVAGE-STOCK-SIM && git pull && sudo systemctl restart xavage-worker
 
-Railway → your service → **Settings → Danger → Remove service**.
+# logs
+journalctl -u xavage-worker -f              # follow
+journalctl -u xavage-worker -n 100          # recent
+journalctl -u xavage-worker -p warning      # only things that went wrong
+
+# control
+sudo systemctl restart xavage-worker
+sudo systemctl stop xavage-worker
+```
+
+If `git pull` brings a new dependency (it won't, often), re-run
+`bash worker/setup.sh` instead of just restarting.
+
+To test a change without disturbing the service:
+
+```bash
+sudo systemctl stop xavage-worker
+cd ~/XAVAGE-STOCK-SIM/worker && ~/.xavage-venv/bin/python poller.py --once
+sudo systemctl start xavage-worker
+```
 
 ---
 
@@ -217,24 +191,21 @@ Railway → your service → **Settings → Danger → Remove service**.
 **No inbound ports.** The worker only makes outbound connections. Leave the
 security list alone — don't open 80/443. Less surface, nothing to configure.
 
+**Memory limits are set deliberately.** The unit sets `MemoryHigh=600M` and
+`MemoryMax=800M`, so if the worker ever leaks it gets throttled and then killed
+and restarted, rather than taking the whole box down with it. Steady state is
+~260 MB, so there is a lot of headroom.
+
+**Journal size.** systemd caps the journal at 10% of `/var/log` by default,
+which is fine on a 47 GB boot volume. If you want it smaller:
+`sudo journalctl --vacuum-size=200M`.
+
 **Idle reclamation.** Oracle may reclaim Always Free compute that sits idle
 (very low CPU for ~7 days). This worker polls every 5 seconds during market
-hours, so it won't qualify — but don't stop the container for a week and
-expect the VM to still be there.
+hours, so it won't qualify — but don't stop it for a week and expect the VM to
+still be there.
 
-**Updating the worker later:**
-
-```bash
-cd ~/XAVAGE-STOCK-SIM && git pull
-bash worker/setup-oracle.sh          # rebuilds and restarts
-```
-
-**Reading logs after reconnecting:**
-
-```bash
-sudo docker logs --tail 100 xavage-worker      # recent
-sudo docker logs -f xavage-worker              # follow
-sudo docker restart xavage-worker              # restart
-```
-
-Logs are capped at 3 × 10 MB so they can't fill the boot volume.
+**Two workers at once is safe.** Quote writes are idempotent upserts and
+`match_orders()` takes a transaction-level advisory lock, so running this
+alongside the Vercel cron fallback can't double-fill. It just doubles the load
+on Yahoo for nothing, so turn the other one off once this is healthy.

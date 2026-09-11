@@ -1,7 +1,12 @@
-# Direct dependencies. Versions are the ones actually exercised against the
-# live project -- see requirements.lock.txt for the full resolved tree, which
-# is what the Docker image installs.
-yfinance==1.7.0
-supabase==2.31.0
-python-dotenv==1.1.1
-pandas==3.0.5
+# The worker's entire third-party dependency surface.
+#
+# Supabase is spoken to over the standard library (see db.py) and .env is
+# parsed in config.py, so supabase-py, httpx, pydantic, python-dotenv and the
+# ~30 packages behind them are all gone. pandas and numpy still arrive as
+# yfinance's own requirements -- they are not imported for our sake.
+#
+# Unpinned on purpose: yfinance is a scraper against a website that changes
+# without notice, and pinning it is how you end up with a feed that silently
+# stops resolving mid-competition. Upgrade it freely; `python poller.py --once`
+# tells you in one cycle whether the upgrade is good.
+yfinance>=1.7

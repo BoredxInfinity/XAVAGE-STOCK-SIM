@@ -134,7 +134,8 @@ cp .env.example .env      # SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
 python poller.py
 ```
 
-See [`worker/README.md`](worker/README.md) for hosting it on Railway/Fly/Render.
+See [`worker/README.md`](worker/README.md) to run it, and
+[`worker/DEPLOY-ORACLE.md`](worker/DEPLOY-ORACLE.md) to host it free on Oracle Cloud.
 
 ### 6. Deploy
 
@@ -227,6 +228,6 @@ src/
   components/       UI, tables, trade widgets, admin views
   lib/              supabase clients, types, formatting, quote store
 supabase/migrations/ schema, engine, RLS, seed
-worker/             Python yfinance price worker
+worker/             Python yfinance price worker (one dependency, systemd)
 scripts/            admin bootstrap
 ```

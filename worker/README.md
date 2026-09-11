@@ -4,11 +4,24 @@ Primary market-data feed. Pulls live prices from **yfinance**, writes them to
 Supabase, and runs the matching engine on every tick so resting limit, stop and
 trailing orders fill against real prices.
 
+It is built to run on the smallest free box you can get — 1 OCPU, 1 GB RAM —
+so it has exactly one third-party dependency and talks to Supabase over the
+Python standard library.
+
+```
+poller.py    the loop: universe -> prices -> quotes -> match_orders -> snapshots
+feed.py      yfinance fetching and parsing
+db.py        a small PostgREST client over http.client
+config.py    env + .env loading and validation
+market.py    US exchange calendar and session state
+setup.sh     one-shot installer for Oracle Linux / Ubuntu (systemd, no Docker)
+```
+
 ## Run it locally
 
 ```bash
 cd worker
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate   # needs Python 3.10+
 pip install -r requirements.txt
 cp .env.example .env      # fill in SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
 python poller.py
@@ -17,97 +30,93 @@ python poller.py
 You should see a line per cycle:
 
 ```
-14:31:02  INFO    xavage.worker  cycle 12 | regular | 101 quotes | 2 fill(s) | 1.84s
+14:31:02  INFO    xavage.worker  cycle 12 | regular | 105 quotes | 105 new bars | 2 fill(s) | 4.22s
 ```
 
-## Deploy to Railway
+`python poller.py --once` runs a single cycle and exits — the quickest way to
+check a config change, a yfinance upgrade, or a new host's egress path.
 
-The worker is required infrastructure on a Vercel Hobby plan, because the cron
-fallback is capped at once per day. It needs a host that stays up.
+## Deploy
 
-1. **[railway.app](https://railway.app)** → **New Project** → **Deploy from GitHub repo**
-   → pick `XAVAGE-STOCK-SIM`. Authorise Railway for the repo if prompted (it's private).
+**[DEPLOY-ORACLE.md](DEPLOY-ORACLE.md)** — Oracle Cloud Always Free, which is
+the intended home for this. Clone, run `setup.sh`, done; updates are `git pull`
+and a restart.
 
-2. Open the service → **Settings** → **Source** → set **Root Directory** to:
+Anywhere else with Python 3.10+ and outbound HTTPS works the same way: install
+`requirements.txt`, set the two environment variables, run `poller.py` as a
+long-lived background process. It listens on no port and needs no inbound
+access, so never deploy it as a web service.
 
-   ```
-   worker
-   ```
+## What it costs
 
-   This is the important step. Without it Railway builds the Next.js app at the
-   repo root instead of the worker. Once set, it auto-detects `worker/Dockerfile`.
+Measured against a 105-symbol universe:
 
-3. **Variables** tab → add:
+| | |
+| --- | --- |
+| Packages installed | 23 (`yfinance` and its own requirements) |
+| Resident memory, steady state | ~260 MB |
+| Cycle time, steady state | ~4 s — almost entirely waiting on Yahoo |
+| Network per cycle | one request per symbol, then ~3 Supabase writes |
 
-   | Name | Value |
-   | --- | --- |
-   | `SUPABASE_URL` | `https://<project-ref>.supabase.co` |
-   | `SUPABASE_SERVICE_ROLE_KEY` | the service_role key |
-   | `MAX_SYMBOLS` | `400` |
+The **first** cycle backfills all chart history (~160k rows) and takes a few
+minutes. After that the worker tracks a high-water mark per series and only
+sends bars the database has not seen.
 
-   The cadence variables are optional — the defaults (5s live / 120s idle /
-   30min history) are what you want.
+### Why there is no Dockerfile and no supabase-py
 
-4. **Do not add a public domain.** This is a background worker; it listens on no
-   port. Railway may note that nothing is listening — that is expected and fine.
-   Ignore any "no open ports detected" hint; don't add a healthcheck.
+Both were dropped deliberately when this moved to a 1 GB instance.
 
-5. **Deploy**, then watch the **Logs** tab. A healthy start looks like:
+- **supabase-py** brought ~30 packages (pydantic, httpx, h2, realtime,
+  storage3, gotrue, protobuf...) to make five kinds of REST call. `db.py` makes
+  them with `http.client` over a single keep-alive HTTP/1.1 connection, which
+  also removes the HTTP/2 stream-reset problem that used to need a client-swap
+  hack at startup.
+- **Docker** cost ~70 MB of daemon plus a second copy of Python on a box with
+  1 GB. systemd already does restart-on-failure, restart-on-boot, log capture
+  and memory limits.
 
-   ```
-   cadence: 5s live / 120s idle | history refresh every 1800s
-   cached 101 previous close(s)
-   cycle 1 | pre (idle, mode=regular) | 101 quotes | 48017 new bars | no fills | 152.68s
-   cycle 2 | regular | 101 quotes | 113 new bars | 2 fill(s) | 8.66s
-   ```
+## Cadence
 
-   The first cycle is slow (a couple of minutes) because it backfills all chart
-   history. Steady state is a few seconds.
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `POLL_INTERVAL_SECONDS` | `5` | While the session is open. A cycle takes ~4s, so this is about as tight as it usefully goes |
+| `IDLE_INTERVAL_SECONDS` | `120` | Outside the session — nothing is moving |
+| `HISTORY_INTERVAL_SECONDS` | `1800` | 5D/1Y chart ranges. The 1m series rides the price tick, so it is never staler than the price |
+| `MAX_SYMBOLS` | `400` | Ceiling on the polled universe |
+| `BATCH_SIZE` | `60` | Symbols per bulk download |
+| `DOWNLOAD_THREADS` | `8` | yfinance fetches one URL per symbol; past 8 the gain is noise |
+| `BARS_PER_SYMBOL` | `500` | Cold-start backfill depth per symbol |
 
-6. Confirm from the app: **Admin → Overview** should show **"Price feed healthy"**
-   with a recent tick.
+The worker also follows the admin's **market hours mode** (`regular`,
+`extended`, `always_open`) from `game_settings`, so widening the session in the
+app switches the worker off its idle cadence too.
+
+## Safety
+
+- **Idempotent with the Vercel cron.** `match_orders()` takes a
+  transaction-level advisory lock, so if the cron and the worker tick
+  simultaneously, the second caller returns immediately instead of
+  double-filling.
+- **Never crashes the loop.** Every stage catches its own exceptions; a bad
+  symbol or a Yahoo hiccup costs one cycle, not the competition.
+- **Writes are held back on failure.** A dropped chunk of chart bars leaves the
+  high-water mark where it was, so the next cycle resends it instead of leaving
+  a permanent hole.
+- **Uses the service-role key**, so it bypasses RLS. Keep the key off any client
+  and out of version control.
 
 ### Things to check
 
-- `101 quotes` should match your tradable instrument count. A `MAX_SYMBOLS`
+- The quote count should match your tradable instrument count. A `MAX_SYMBOLS`
   warning in the logs means symbols are being silently skipped — they'd have no
   price and orders on them would be refused.
 - Occasional `Failed to get ticker 'XYZ' ... Connection timed out` lines are
   normal. yfinance logs them; the worker carries on and the symbol is picked up
   next cycle.
-- Railway restarts the container on exit. The worker catches its own exceptions
-  per stage, so a crash loop means something environmental — check the variables
-  first.
-
-### Other hosts
-
-Any container platform works — Fly.io, Render, a small VPS:
-
-```bash
-docker build -t xavage-worker worker/
-docker run -e SUPABASE_URL=... -e SUPABASE_SERVICE_ROLE_KEY=... xavage-worker
-```
-
-Always run it as a **background/worker** service, never a web service.
-
-## Cadence
-
-| Setting                  | Default | Notes                                        |
-| ------------------------ | ------- | -------------------------------------------- |
-| `POLL_INTERVAL_SECONDS`  | `5`     | While the regular session is open            |
-| `IDLE_INTERVAL_SECONDS`  | `120`   | Outside the session — nothing is moving      |
-| `BAR_INTERVAL_SECONDS`   | `300`   | Chart-history backfill, off the hot path     |
-| `MAX_SYMBOLS`            | `400`   | Ceiling on the polled universe               |
-
-## Safety
-
-- **Idempotent with the Vercel cron.** `match_orders()` takes a transaction-level
-  advisory lock, so if the cron and the worker tick simultaneously, the second
-  caller returns immediately instead of double-filling.
-- **Never crashes the loop.** Every stage catches its own exceptions; a bad
-  symbol or a Yahoo hiccup costs one cycle, not the competition.
-- **Uses the service-role key**, so it bypasses RLS. Keep the key off any client
-  and out of version control.
+- `requirements.txt` does not pin yfinance. It is a scraper against a site that
+  changes without notice, and pinning it is how you end up with a feed that
+  quietly stops resolving mid-competition. Upgrade it freely and run
+  `python poller.py --once` to check.
 
 ## If the worker dies mid-competition
 

@@ -1,7 +1,8 @@
 # Deploying Xavage
 
 Two targets: **Supabase** (database + auth) and **Vercel** (the app). The Python
-price worker runs wherever you like — see [`worker/README.md`](worker/README.md).
+price worker needs a host that stays up — see
+[`worker/DEPLOY-ORACLE.md`](worker/DEPLOY-ORACLE.md) for the free Oracle Cloud setup.
 
 ---
 
