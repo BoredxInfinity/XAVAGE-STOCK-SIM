@@ -28,6 +28,111 @@ say() { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 
 command -v python3 >/dev/null || { echo "python3 required" >&2; exit 1; }
 
+# --------------------------------------------------------------- interpreter
+# Oracle Linux 9 ships Python 3.9, which yfinance cannot use. Getting 3.11
+# with dnf means the instance parses ~131 MB of uncompressed repo metadata
+# into libsolv -- on 1 GB that is enough to starve the machine outright.
+#
+# The dependency closure is actually four packages totalling ~14 MB, and every
+# shared library they need is already on the base image (python3.9 requires
+# the same set). So resolve it here and ship the RPMs; the server just runs
+# `rpm -Uvh`, which has no solver and no metadata to parse.
+if [ "${SKIP_RPMS:-0}" = "1" ]; then
+  say "SKIP_RPMS=1 -- not bundling an interpreter"
+else
+  say "Resolving python$PYDOT RPMs from Oracle's public repo"
+  REPO=https://yum.oracle.com/repo/OracleLinux/OL9/appstream/x86_64
+  mkdir -p "$STAGE/xavage-worker/rpms"
+
+  curl -fsSL --max-time 60 "$REPO/repodata/repomd.xml" -o "$STAGE/repomd.xml"
+  PRIMARY=$(python3 - "$STAGE/repomd.xml" <<'EOF'
+import re, sys
+s = open(sys.argv[1]).read()
+for m in re.finditer(r'<data type="primary">.*?<location href="([^"]+)"', s, re.S):
+    print(m.group(1)); break
+EOF
+)
+  [ -n "$PRIMARY" ] || { echo "could not find primary.xml in repomd" >&2; exit 1; }
+  curl -fsSL --max-time 300 "$REPO/$PRIMARY" -o "$STAGE/primary.xml.gz"
+
+  python3 - "$STAGE/primary.xml.gz" "$REPO" "$STAGE/xavage-worker/rpms" <<'EOF'
+import gzip, sys, urllib.request
+import xml.etree.ElementTree as ET
+
+path, repo, dest = sys.argv[1], sys.argv[2], sys.argv[3]
+NS = {'c': 'http://linux.duke.edu/metadata/common'}
+WANT = {"python3.11", "python3.11-libs", "python3.11-pip-wheel",
+        "python3.11-setuptools-wheel"}
+ARCH = {"x86_64", "noarch"}
+
+
+def _seg(s):
+    """Split an RPM version into comparable alternating digit/alpha runs."""
+    out, cur, isdig = [], "", None
+    for ch in s:
+        if not ch.isalnum():
+            if cur:
+                out.append(cur); cur = ""; isdig = None
+            continue
+        d = ch.isdigit()
+        if isdig is not None and d != isdig:
+            out.append(cur); cur = ""
+        cur += ch; isdig = d
+    if cur:
+        out.append(cur)
+    return out
+
+
+def vercmp(a, b):
+    """rpmvercmp: digits beat letters, longer digit runs win numerically."""
+    for x, y in zip(_seg(a), _seg(b)):
+        xd, yd = x.isdigit(), y.isdigit()
+        if xd != yd:
+            return 1 if xd else -1
+        if xd:
+            x, y = x.lstrip("0") or "0", y.lstrip("0") or "0"
+            if len(x) != len(y):
+                return 1 if len(x) > len(y) else -1
+        if x != y:
+            return 1 if x > y else -1
+    la, lb = len(_seg(a)), len(_seg(b))
+    return (la > lb) - (la < lb)
+
+
+best = {}
+# The repo keeps every historical build, so take the newest EVR per name
+# rather than whatever the parser happens to see last.
+with gzip.open(path) as fh:
+    for _, el in ET.iterparse(fh, events=("end",)):
+        if el.tag != '{http://linux.duke.edu/metadata/common}package':
+            continue
+        name = el.findtext('c:name', namespaces=NS)
+        arch = el.findtext('c:arch', namespaces=NS)
+        if name in WANT and arch in ARCH:
+            v = el.find('c:version', NS)
+            evr = (v.get('ver'), v.get('rel'))
+            loc = el.find('c:location', NS).get('href')
+            prev = best.get(name)
+            if prev is None or vercmp(evr[0], prev[0][0]) > 0 or (
+                    evr[0] == prev[0][0] and vercmp(evr[1], prev[0][1]) > 0):
+                best[name] = (evr, loc)
+        el.clear()
+
+missing = WANT - set(best)
+if missing:
+    sys.exit(f"could not resolve: {', '.join(sorted(missing))}")
+
+total = 0
+for name, ((ver, rel), loc) in sorted(best.items()):
+    fn = loc.rsplit("/", 1)[-1]
+    urllib.request.urlretrieve(f"{repo}/{loc}", f"{dest}/{fn}")
+    import os
+    total += os.path.getsize(f"{dest}/{fn}")
+    print(f"    {name:30s} {ver}-{rel}")
+print(f"    -> {total/1048576:.1f} MB of RPMs")
+EOF
+fi
+
 say "Cross-building Linux x86_64 / cp$PYVER wheels"
 # --platform + --only-binary=:all: makes pip resolve for the TARGET machine
 # rather than this one, so an arm64 Mac produces a manylinux x86_64 tree.

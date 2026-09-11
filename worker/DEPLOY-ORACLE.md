@@ -78,8 +78,9 @@ bash worker/build-bundle.sh
 scp -i ~/Downloads/ssh-key-*.key xavage-worker-bundle.tar.gz opc@<PUBLIC_IP>:~
 ```
 
-That produces a **~43 MB** tarball holding the worker plus all 23 dependencies,
-cross-built for Linux x86_64 / CPython 3.11. Building on an ARM Mac is fine:
+That produces a **~56 MB** tarball holding the worker, all 23 Python
+dependencies cross-built for Linux x86_64 / CPython 3.11, and the four RPMs
+for the interpreter itself. Building on an ARM Mac is fine:
 `pip` is told to resolve for the target platform, and nothing is executed, only
 unpacked.
 
@@ -90,14 +91,18 @@ tar xzf xavage-worker-bundle.tar.gz
 bash xavage-worker/setup.sh
 ```
 
-`setup.sh` sees the bundled `libs/` and skips installing anything. It still:
+`setup.sh` finds the bundled `libs/` and `rpms/` and downloads nothing. It:
 
 1. adds a 2 GB swapfile **before** anything else allocates
-2. makes sure a Python 3.10+ interpreter exists (see below)
+2. installs Python 3.11 from the bundled RPMs with `rpm -Uvh` — no `dnf`, no
+   repo metadata (skipped entirely if a 3.10+ interpreter already exists)
 3. asks for your Supabase URL and service-role key (input hidden)
 4. **runs one real cycle** and stops if it fails
 5. installs and starts the `xavage-worker` systemd service, pointing
    `PYTHONPATH` at the bundled `libs/`
+
+No pip, no venv, no dependency resolver and no package downloads run on the
+instance at any point.
 
 Everything it does is logged to `~/xavage-setup.log`, line by line. If the box
 locks up and you have to reboot it from the console, that file tells you which
@@ -117,42 +122,47 @@ That is a ~60 KB upload and needs nothing installed on either end.
 
 ---
 
-## 3b. The one thing that still needs a package
+## 3b. Why the instance was freezing
 
-The bundle removes pip from the server, but Python itself still has to come
-from somewhere. Oracle Linux 9 ships Python **3.9** as `/usr/bin/python3`, and
-yfinance cannot run on it — `curl_cffi` declares `Requires-Python >=3.10` and
-pandas 3 wants `>=3.11`.
+`dnf install python3.11` was the step that took the box down, and it is worth
+knowing why, because the fix follows from it.
 
-**`dnf install python3.11` is the step most likely to take the box down**, and
-`setup.sh` handles it in that order for a reason: swap first, then dnf, with
-weak dependencies and docs disabled.
+Oracle Linux 9 ships Python **3.9** as `/usr/bin/python3`, and yfinance cannot
+run on it — `curl_cffi` declares `Requires-Python >=3.10`. So an interpreter
+has to come from somewhere. But asking `dnf` for it means the instance
+downloads the AppStream repo index and parses it into libsolv: **~131 MB of
+XML uncompressed, from one repo**, before it has decided to install anything.
+On 1 GB that is enough to starve the machine until it stops answering —
+including the OCI monitoring agent, which is why the console goes blank on CPU
+and memory rather than showing a spike.
 
-If you want to watch it happen rather than trust a script, run these by hand
-first — then `setup.sh` will find the interpreter and install nothing:
+The actual dependency closure is **four packages, 14 MB**:
 
-```bash
-# 1. swap FIRST. Use dd, not fallocate: OCI boot volumes are XFS, where
-#    fallocate produces extents that swapon rejects.
-sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
-sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-free -m                      # confirm 2048 MB of swap before going on
+| Package | Size |
+| --- | --- |
+| `python3.11` | 32 KB |
+| `python3.11-libs` | 12 MB |
+| `python3.11-pip-wheel` | 1.4 MB |
+| `python3.11-setuptools-wheel` | 716 KB |
 
-# 2. optional, but it buys real headroom: the Oracle Cloud Agent is a
-#    substantial resident process on a 1 GB box. Stop it for the install.
-sudo systemctl stop oracle-cloud-agent oracle-cloud-agent-updater
+Every shared library they need — openssl, libffi, sqlite, ncurses, readline,
+libmpdec, tzdata — is already on the base image, because the bundled Python 3.9
+requires the same set.
 
-# 3. now the install, kept to the interpreter and nothing else
-sudo dnf install -y --setopt=install_weak_deps=False --setopt=keepcache=0 \
-  --nodocs python3.11
-sudo dnf clean all
+So `build-bundle.sh` resolves that closure against Oracle's public repo *on
+your laptop* and ships the four RPMs inside the bundle. On the instance,
+`setup.sh` installs them with:
 
-# 4. put the agent back
-sudo systemctl start oracle-cloud-agent oracle-cloud-agent-updater
+```
+rpm -Uvh rpms/*.rpm
 ```
 
-Check it worked: `python3.11 -V` should print `Python 3.11.x`.
+`rpm` installs exactly what it is handed. No solver, no repo metadata, no
+network. That is the whole difference between an install that finishes in
+seconds and one that hangs the machine.
+
+`dnf` is still there as a fallback if you run `setup.sh` without a bundle, and
+it warns you first.
 
 ### If it froze and the console shows no metrics
 
@@ -164,10 +174,21 @@ in the console (a hard reset, since it will not shut down cleanly), then:
 cat ~/xavage-setup.log          # which phase it died in
 free -m                         # is swap actually on?
 dmesg -T | grep -i 'killed process'
-sudo grep -i 'out of memory' /var/log/messages | tail
 ```
 
-If `free -m` shows `Swap: 0`, that is the cause, and step 1 above is the fix.
+If `free -m` shows `Swap: 0`, add it before anything else. Use `dd`, **not**
+`fallocate` — OCI boot volumes are XFS, where fallocate produces extents that
+`swapon` rejects:
+
+```bash
+sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+free -m
+```
+
+Swap is insurance, not the fix — with the bundle, nothing in the install
+should come close to needing it.
 
 ### Would a custom image help?
 

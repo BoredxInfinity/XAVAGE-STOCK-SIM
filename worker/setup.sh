@@ -84,20 +84,28 @@ find_python() {
 }
 
 if ! PY="$(find_python)"; then
-  say "No Python 3.10+ present -- installing one from the distro's own repo"
-  if command -v dnf >/dev/null 2>&1; then
-    # install_weak_deps=False and --nodocs hold this to the interpreter
-    # itself rather than its recommended extras; clearing the cache after
-    # gives back the repo metadata dnf just unpacked.
+  # Prefer the bundled RPMs. `rpm` installs exactly what it is given: no
+  # solver, no repo metadata, no network. dnf, by contrast, parses ~131 MB of
+  # uncompressed AppStream metadata into libsolv, which on a 1 GB instance is
+  # enough to starve the machine until it stops answering entirely.
+  if [ -d "$WORKER_DIR/rpms" ] && ls "$WORKER_DIR/rpms"/*.rpm >/dev/null 2>&1; then
+    say "Installing the bundled interpreter with rpm (no dnf, no metadata)"
+    ls -1 "$WORKER_DIR/rpms"/*.rpm | sed 's|.*/|    |'
+    sudo rpm -Uvh --replacepkgs "$WORKER_DIR"/rpms/*.rpm
+    PY="$(find_python)" || die "rpm reported success but no Python 3.10+ appeared"
+  elif command -v dnf >/dev/null 2>&1; then
+    say "No bundled RPMs -- falling back to dnf"
+    note "on a 1 GB box this is the step most likely to hang; see DEPLOY-ORACLE.md"
     sudo dnf install -y --setopt=install_weak_deps=False --setopt=keepcache=0 \
       --nodocs python3.11 python3.11-pip
     sudo dnf clean all >/dev/null 2>&1 || true
+    PY="$(find_python)" || die "still no Python 3.10+ after install"
   elif command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update -qq && sudo apt-get install -y python3 python3-venv python3-pip
+    PY="$(find_python)" || die "still no Python 3.10+ after install"
   else
-    die "no dnf or apt-get; install Python 3.10+ manually and re-run"
+    die "no bundled rpms, no dnf, no apt-get; install Python 3.10+ and re-run"
   fi
-  PY="$(find_python)" || die "still no Python 3.10+ after install"
 fi
 say "Using $($PY -c 'import sys,platform; print(platform.python_implementation(), sys.version.split()[0], "at", sys.executable)')"
 
