@@ -4,6 +4,15 @@
 # Runs the worker directly under systemd rather than Docker: measured peak is
 # ~320 MB, and on a 1 GB box the Docker daemon's ~70 MB is worth not spending.
 # Idempotent -- re-run to update to the latest commit.
+#
+# Interactive by default. To run it detached (nohup / CI / a flaky connection),
+# pre-supply the three answers and it will not prompt for anything:
+#
+#   GH_TOKEN=... SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+#     nohup bash setup.sh > setup.log 2>&1 &
+#
+# It also skips the log-follow at the end when stdout isn't a terminal, so it
+# exits cleanly instead of hanging forever on `journalctl -f`.
 set -euo pipefail
 
 REPO_DIR="${HOME}/XAVAGE-STOCK-SIM"
@@ -73,11 +82,13 @@ if [ -d "$REPO_DIR/.git" ]; then
   git -C "$REPO_DIR" pull --ff-only
 else
   say "Cloning the repository"
-  echo "The repo is private, so this needs a GitHub token with read access."
-  echo "Create one at: https://github.com/settings/personal-access-tokens"
-  echo "  Repository access: only XAVAGE-STOCK-SIM   Permission: Contents = Read"
-  read -rsp "GitHub token (input hidden): " GH_TOKEN; echo
-  [ -n "$GH_TOKEN" ] || die "No token supplied."
+  if [ -z "${GH_TOKEN:-}" ]; then
+    echo "The repo is private, so this needs a GitHub token with read access."
+    echo "Create one at: https://github.com/settings/personal-access-tokens"
+    echo "  Repository access: only XAVAGE-STOCK-SIM   Permission: Contents = Read"
+    read -rsp "GitHub token (input hidden): " GH_TOKEN; echo
+  fi
+  [ -n "${GH_TOKEN:-}" ] || die "No token supplied (set GH_TOKEN to run unattended)."
   git clone "https://${GH_TOKEN}@github.com/BoredxInfinity/XAVAGE-STOCK-SIM.git" "$REPO_DIR" \
     || die "Clone failed -- check the token has Contents:Read on this repo."
   git -C "$REPO_DIR" remote set-url origin "https://github.com/BoredxInfinity/XAVAGE-STOCK-SIM.git"
@@ -104,8 +115,14 @@ echo "  dependencies OK"
 ENV_FILE="$REPO_DIR/worker/.env"
 if [ ! -f "$ENV_FILE" ]; then
   say "Supabase credentials"
-  read -rp  "SUPABASE_URL: " SB_URL
-  read -rsp "SUPABASE_SERVICE_ROLE_KEY (input hidden): " SB_KEY; echo
+  SB_URL="${SUPABASE_URL:-}"
+  SB_KEY="${SUPABASE_SERVICE_ROLE_KEY:-}"
+  [ -n "$SB_URL" ] || read -rp  "SUPABASE_URL: " SB_URL
+  if [ -z "$SB_KEY" ]; then
+    read -rsp "SUPABASE_SERVICE_ROLE_KEY (input hidden): " SB_KEY; echo
+  fi
+  [ -n "$SB_URL" ] && [ -n "$SB_KEY" ] \
+    || die "Missing credentials (set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to run unattended)."
 
   case "$SB_KEY" in
     *[$'\n\r\t ']*) die "The key contains whitespace or a line break. Paste ONLY the key." ;;
@@ -162,6 +179,16 @@ sudo systemctl daemon-reload
 sudo systemctl enable ${SERVICE} >/dev/null 2>&1
 sudo systemctl restart ${SERVICE}
 
-say "Started. Following the log -- Ctrl-C stops watching, not the worker."
-sleep 3
-sudo journalctl -u ${SERVICE} -f -n 30 --no-hostname
+if [ -t 1 ]; then
+  say "Started. Following the log -- Ctrl-C stops watching, not the worker."
+  sleep 3
+  sudo journalctl -u ${SERVICE} -f -n 30 --no-hostname
+else
+  # Detached: print a snapshot and exit, rather than blocking on -f forever.
+  say "Started. Recent log:"
+  sleep 20
+  sudo journalctl -u ${SERVICE} -n 30 --no-hostname --no-pager || true
+  echo
+  echo "Setup complete. The worker runs under systemd and survives disconnects."
+  echo "  sudo journalctl -u ${SERVICE} -f"
+fi

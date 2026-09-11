@@ -131,6 +131,49 @@ prompt is rejected up front rather than failing later as an unreadable
 
 ---
 
+## Keeping setup alive when you disconnect
+
+The setup takes several minutes and dies with your SSH session. Two ways round it.
+
+### tmux (simplest)
+
+```bash
+sudo dnf install -y tmux          # or: sudo apt-get install -y tmux
+tmux new -s setup
+bash setup.sh                     # answer the prompts
+```
+
+Then press **`Ctrl-B`** then **`D`** to detach. Close the laptop whenever.
+
+Reconnect later and pick up exactly where you left off:
+
+```bash
+ssh -i ~/Downloads/ssh-key-*.key opc@<PUBLIC_IP>
+tmux attach -t setup
+```
+
+`tmux ls` lists sessions; `exit` inside one ends it.
+
+### Fully unattended
+
+Supply the three answers up front and nothing prompts:
+
+```bash
+GH_TOKEN='github_pat_...' \
+SUPABASE_URL='https://<ref>.supabase.co' \
+SUPABASE_SERVICE_ROLE_KEY='eyJ...' \
+  nohup bash setup.sh > setup.log 2>&1 &
+```
+
+Disconnect immediately. Check on it later with `tail -f ~/setup.log`.
+
+Start the command with a **space** so the token and key don't land in your
+shell history.
+
+> Once setup finishes, none of this matters — the worker runs under systemd,
+> which is independent of your SSH session and restarts on boot. This only
+> covers the install itself.
+
 ## 5. Confirm it's working
 
 ```bash
