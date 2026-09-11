@@ -19,7 +19,8 @@ die() { printf "\n\033[1;31mERROR: %s\033[0m\n" "$*" >&2; exit 1; }
 # locking you out of the box.
 if ! sudo swapon --show | grep -q swapfile; then
   say "Adding 2 GB swap"
-  sudo fallocate -l 2G /swapfile
+  sudo fallocate -l 2G /swapfile 2>/dev/null \
+    || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
   sudo chmod 600 /swapfile
   sudo mkswap /swapfile >/dev/null
   sudo swapon /swapfile
@@ -32,9 +33,39 @@ else
 fi
 
 # ---------------------------------------------------------------- packages
-say "Installing Python and git"
-sudo apt-get update -qq
-sudo apt-get install -y -qq python3 python3-venv python3-dev git build-essential
+# OCI's default image is Oracle Linux (dnf), but Ubuntu (apt) is a common pick,
+# so handle both. Oracle Linux 9 ships Python 3.9 and pandas needs >= 3.11, so
+# a newer interpreter has to be installed explicitly rather than assumed.
+PY_BIN=""
+
+if command -v dnf >/dev/null 2>&1; then
+  say "Oracle Linux / RHEL detected - installing with dnf"
+  sudo dnf install -y -q git gcc >/dev/null
+
+  for v in 3.12 3.11; do
+    if sudo dnf install -y -q "python${v}" "python${v}-devel" >/dev/null 2>&1; then
+      PY_BIN="python${v}"
+      break
+    fi
+  done
+  [ -n "$PY_BIN" ] || die "Could not install Python 3.11+ (pandas requires it). Try: sudo dnf search python3."
+
+elif command -v apt-get >/dev/null 2>&1; then
+  say "Debian / Ubuntu detected - installing with apt"
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq python3 python3-venv python3-dev git build-essential
+  PY_BIN=python3
+
+else
+  die "No supported package manager found (looked for dnf and apt-get)."
+fi
+
+# pandas needs 3.11+; refuse now rather than failing mid-install.
+PY_VER=$($PY_BIN -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+case "$PY_VER" in
+  3.9|3.10) die "Found Python $PY_VER, but pandas requires 3.11+. Install python3.12 and re-run." ;;
+esac
+echo "  using $PY_BIN (Python $PY_VER)"
 
 # ---------------------------------------------------------------- source
 if [ -d "$REPO_DIR/.git" ]; then
@@ -56,7 +87,7 @@ fi
 # ---------------------------------------------------------------- venv
 say "Building the virtualenv"
 cd "$REPO_DIR/worker"
-[ -d .venv ] || python3 -m venv .venv
+[ -d .venv ] || "$PY_BIN" -m venv .venv
 ./.venv/bin/pip install --quiet --upgrade pip
 
 # The lockfile was frozen on a different Python minor version, so some exact

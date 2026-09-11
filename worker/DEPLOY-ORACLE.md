@@ -31,7 +31,7 @@ nothing compiles from source on Ampere.
 | Field | Value |
 | --- | --- |
 | Name | `xavage-worker` |
-| Image | **Ubuntu 24.04** (click *Change image* → Canonical Ubuntu) |
+| Image | **Oracle Linux 9** (the default) or Ubuntu 24.04 — both work |
 | Shape | *Change shape* → **Ampere** → `VM.Standard.A1.Flex` → **1 OCPU, 6 GB** |
 | Networking | Leave defaults — it creates a VCN and assigns a public IPv4 |
 | SSH keys | **Generate a key pair** and *download the private key* |
@@ -72,7 +72,12 @@ chmod 600 ~/Downloads/ssh-key-*.key
 ssh -i ~/Downloads/ssh-key-*.key ubuntu@<PUBLIC_IP>
 ```
 
-Ubuntu images use the `ubuntu` user. Oracle Linux uses `opc`.
+The login user depends on the image: **`opc`** for Oracle Linux (the OCI
+default), **`ubuntu`** for Ubuntu.
+
+The setup script handles both distros. Note that Oracle Linux 9 ships Python
+**3.9** while pandas needs **3.11+**, so the script installs `python3.12`
+explicitly — verified working on a stock `oraclelinux:9` image.
 
 ---
 
