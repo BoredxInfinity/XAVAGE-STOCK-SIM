@@ -78,6 +78,32 @@ Ubuntu images use the `ubuntu` user. Oracle Linux uses `opc`.
 
 ## 4. Run the setup script
 
+### On a 1 GB E2.1.Micro — use the lean path
+
+Measured peak for this worker is **~320 MB**. On a 1 GB box that fits, but the
+Docker daemon's ~70 MB is worth not spending, so there's a second script that
+runs the worker directly under **systemd** with no Docker at all:
+
+```bash
+nano setup.sh        # paste worker/setup-oracle-micro.sh
+bash setup.sh
+```
+
+It adds 2 GB of swap, builds a virtualenv, writes the service, and enables it
+on boot. It also sets `MemoryMax=700M` so a runaway gets restarted by systemd
+rather than letting the kernel OOM killer pick a victim — which on a 1 GB box
+could be `sshd`, locking you out of the machine.
+
+Manage it with:
+
+```bash
+sudo systemctl status xavage-worker
+sudo journalctl -u xavage-worker -f        # follow logs
+sudo systemctl restart xavage-worker
+```
+
+### On a larger Ampere instance — Docker is fine
+
 On the VM:
 
 ```bash
