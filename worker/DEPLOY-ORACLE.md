@@ -64,11 +64,31 @@ script handles either distro.)
 
 ## 3. Install
 
-The repo is private, so clone it with a GitHub personal access token that has
-`repo` scope. Start the line with a **space** so the token stays out of your
+The repo is private, so you need a GitHub personal access token with `repo`
+scope. Start each line below with a **space** so the token stays out of your
 shell history.
 
+**Without installing anything** — `curl` and `tar` are already on the image, so
+you never have to touch git at all. This is the lightest option and the one to
+use if `dnf` is struggling:
+
 ```bash
+ mkdir -p ~/XAVAGE-STOCK-SIM && curl -fsSL \
+   -H "Authorization: Bearer <YOUR_TOKEN>" \
+   https://api.github.com/repos/BoredxInfinity/XAVAGE-STOCK-SIM/tarball/main \
+   | tar xz -C ~/XAVAGE-STOCK-SIM --strip-components=1
+```
+
+The same command updates an existing checkout later — re-run it and restart the
+service. (It overwrites files but never deletes them, so a file removed
+upstream lingers harmlessly.)
+
+**Or with git**, if you want real `git pull`. Install `git-core`, *not* `git`:
+the `git` package is largely a metapackage that drags in `perl-Git` and ~30
+perl dependencies, while `git-core` is a few MB and provides `/usr/bin/git`.
+
+```bash
+sudo dnf install -y --setopt=install_weak_deps=False --nodocs git-core
  git clone https://<YOUR_TOKEN>@github.com/BoredxInfinity/XAVAGE-STOCK-SIM.git ~/XAVAGE-STOCK-SIM
 ```
 
@@ -91,6 +111,47 @@ everything else:
 6. installs and starts a `xavage-worker` systemd service
 
 Re-running it is safe — it's also the upgrade path.
+
+### If the instance is struggling during setup
+
+On 1 GB with no swap, `dnf` is the hungriest thing that will ever run on this
+box — its dependency solver routinely wants a few hundred MB, and being
+OOM-killed mid-transaction looks like "installing a package killed my server".
+
+`setup.sh` creates the swapfile **before** it touches `dnf` for exactly this
+reason. If you are installing anything by hand beforehand, add swap first:
+
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+Then keep every `dnf` call minimal — no weak dependencies, no docs, no
+retained cache:
+
+```bash
+sudo dnf install -y --setopt=install_weak_deps=False --setopt=keepcache=0 --nodocs <pkg>
+sudo dnf clean all
+```
+
+### Would a custom image help?
+
+Probably not, and it does not avoid the work — it only moves it. You still have
+to do the install once, somewhere, and then you are maintaining an image.
+
+If you want one anyway, the easy route is **not** building an image locally and
+importing it (that path wants qcow2/VMDK conversion, cloud-init, virtio drivers
+and an Object Storage upload). Instead, set one instance up normally and
+capture it: **Instance details → More actions → Create custom image**. OCI
+stops the instance, snapshots the boot volume, and every future instance you
+launch from that image already has Python, the venv and the service on it.
+Check the console for what the stored image costs against your tenancy before
+relying on it.
+
+The honest comparison: with swap in place, `dnf install python3.11` is a
+one-off couple of minutes. A custom image is worth it if you expect to rebuild
+this machine repeatedly, and not otherwise.
 
 ### Why it installs python3.11
 
@@ -173,7 +234,10 @@ sudo systemctl restart xavage-worker
 sudo systemctl stop xavage-worker
 ```
 
-If `git pull` brings a new dependency (it won't, often), re-run
+If you installed without git, update with the same curl command from step 3,
+then restart.
+
+If an update brings a new dependency (it rarely will), re-run
 `bash worker/setup.sh` instead of just restarting.
 
 To test a change without disturbing the service:

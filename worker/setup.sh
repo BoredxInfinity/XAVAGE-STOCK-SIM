@@ -26,6 +26,30 @@ die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 [ -f "$WORKER_DIR/poller.py" ] || die "run this from a checkout: bash worker/setup.sh"
 command -v sudo >/dev/null || die "sudo is required"
 
+# ---------------------------------------------------------------------- swap
+# 1 GB with no swap means the one-time chart backfill can OOM the box. Steady
+# state is ~260 MB, so this is insurance rather than a running cost.
+# This runs FIRST, before anything that allocates. dnf's dependency solver
+# routinely wants a few hundred MB, and on 1 GB with no swap it is the step
+# most likely to be OOM-killed -- which presents as "installing a package
+# killed my server" rather than "you have no swap".
+mem_kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+swap_kb=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo)
+if [ "$mem_kb" -lt 2000000 ] && [ "$swap_kb" -lt 262144 ]; then
+  say "Only $((mem_kb/1024)) MB RAM and no swap -- adding a 2 GB swapfile"
+  sudo fallocate -l 2G /swapfile 2>/dev/null || \
+    sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile >/dev/null
+  sudo swapon /swapfile
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+  # A small box should lean on swap only under real pressure.
+  echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-xavage.conf >/dev/null
+  sudo sysctl -q -w vm.swappiness=10
+else
+  note "memory: $((mem_kb/1024)) MB RAM, $((swap_kb/1024)) MB swap -- leaving as is"
+fi
+
 # --------------------------------------------------------------- interpreter
 # Oracle Linux 9 ships Python 3.9 as /usr/bin/python3, and yfinance cannot run
 # on it: curl_cffi declares Requires-Python >=3.10 and pandas 3 wants >=3.11.
@@ -44,7 +68,12 @@ find_python() {
 if ! PY="$(find_python)"; then
   say "No Python 3.10+ present -- installing one from the distro's own repo"
   if command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y python3.11 python3.11-pip
+    # install_weak_deps=False and --nodocs hold this to the interpreter
+    # itself rather than its recommended extras; clearing the cache after
+    # gives back the repo metadata dnf just unpacked.
+    sudo dnf install -y --setopt=install_weak_deps=False --setopt=keepcache=0 \
+      --nodocs python3.11 python3.11-pip
+    sudo dnf clean all >/dev/null 2>&1 || true
   elif command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update -qq && sudo apt-get install -y python3 python3-venv python3-pip
   else
@@ -53,26 +82,6 @@ if ! PY="$(find_python)"; then
   PY="$(find_python)" || die "still no Python 3.10+ after install"
 fi
 say "Using $($PY -c 'import sys,platform; print(platform.python_implementation(), sys.version.split()[0], "at", sys.executable)')"
-
-# ---------------------------------------------------------------------- swap
-# 1 GB with no swap means the one-time chart backfill can OOM the box. Steady
-# state is ~260 MB, so this is insurance rather than a running cost.
-mem_kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
-swap_kb=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo)
-if [ "$mem_kb" -lt 2000000 ] && [ "$swap_kb" -lt 262144 ]; then
-  say "Only $((mem_kb/1024)) MB RAM and no swap -- adding a 2 GB swapfile"
-  sudo fallocate -l 2G /swapfile 2>/dev/null || \
-    sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
-  sudo chmod 600 /swapfile
-  sudo mkswap /swapfile >/dev/null
-  sudo swapon /swapfile
-  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
-  # A small box should lean on swap only under real pressure.
-  echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-xavage.conf >/dev/null
-  sudo sysctl -q -w vm.swappiness=10
-else
-  note "memory: $((mem_kb/1024)) MB RAM, $((swap_kb/1024)) MB swap -- leaving as is"
-fi
 
 # ------------------------------------------------------------------- install
 say "Installing yfinance into $VENV"
