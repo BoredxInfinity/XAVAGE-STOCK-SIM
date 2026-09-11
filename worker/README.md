@@ -15,6 +15,7 @@ db.py        a small PostgREST client over http.client
 config.py    env + .env loading and validation
 market.py    US exchange calendar and session state
 setup.sh     one-shot installer for Oracle Linux / Ubuntu (systemd, no Docker)
+build-bundle.sh  cross-builds the deps on your laptop, so a 1 GB box runs no pip
 ```
 
 ## Run it locally
@@ -39,8 +40,14 @@ check a config change, a yfinance upgrade, or a new host's egress path.
 ## Deploy
 
 **[DEPLOY-ORACLE.md](DEPLOY-ORACLE.md)** — Oracle Cloud Always Free, which is
-the intended home for this. Clone, run `setup.sh`, done; updates are `git pull`
-and a restart.
+the intended home for this.
+
+On a 1 GB instance, run `build-bundle.sh` on your laptop and upload the ~43 MB
+tarball it produces. The server then installs nothing: `setup.sh` finds the
+bundled `libs/` and just writes the systemd unit. This is not a
+micro-optimisation — resolving and unpacking numpy and pandas with `pip` is
+enough to starve an E2.1.Micro badly enough that the OCI agent stops reporting
+metrics. Anywhere with 2 GB or more, plain `setup.sh` and pip is fine.
 
 Anywhere else with Python 3.10+ and outbound HTTPS works the same way: install
 `requirements.txt`, set the two environment variables, run `poller.py` as a

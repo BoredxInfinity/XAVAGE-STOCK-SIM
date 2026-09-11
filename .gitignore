@@ -18,3 +18,7 @@ venv/
 supabase/.temp/
 supabase/.branches/
 worker/.env*
+
+# worker deploy bundle (built by worker/build-bundle.sh)
+xavage-worker-bundle.tar.gz
+worker/libs/

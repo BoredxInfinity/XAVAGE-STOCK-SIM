@@ -19,9 +19,21 @@ SERVICE=xavage-worker
 UNIT=/etc/systemd/system/${SERVICE}.service
 RUN_USER="$(id -un)"
 
-say()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
+LOG="${XAVAGE_LOG:-$HOME/xavage-setup.log}"
+
+# Everything from here is tee'd to $LOG line by line. On a 1 GB box the
+# failure mode that matters is the machine going unresponsive, taking the SSH
+# session and any scrollback with it -- so the record has to be on disk, where
+# it survives a hard reboot from the console.
+exec > >(tee -a "$LOG") 2>&1
+
+mem()  { awk '/^MemAvailable:|^SwapFree:/{printf "%s %d MB   ", $1, $2/1024}' /proc/meminfo; echo; }
+say()  { printf '\n\033[1;36m==>\033[0m %s\n    ' "$*"; mem; }
 note() { printf '    %s\n' "$*"; }
 die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+trap 'printf "\n\033[1;31mFAILED\033[0m at line %s: %s\n" "$LINENO" "$BASH_COMMAND"' ERR
+printf '\n=== %s  setup.sh starting (log: %s) ===\n' "$(date -u +%FT%TZ)" "$LOG"
 
 [ -f "$WORKER_DIR/poller.py" ] || die "run this from a checkout: bash worker/setup.sh"
 command -v sudo >/dev/null || die "sudo is required"
@@ -37,12 +49,18 @@ mem_kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
 swap_kb=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo)
 if [ "$mem_kb" -lt 2000000 ] && [ "$swap_kb" -lt 262144 ]; then
   say "Only $((mem_kb/1024)) MB RAM and no swap -- adding a 2 GB swapfile"
-  sudo fallocate -l 2G /swapfile 2>/dev/null || \
+  # dd, not fallocate. OCI boot volumes are XFS, where fallocate produces
+  # unwritten extents that swapon rejects with "Invalid argument" -- and
+  # because fallocate itself SUCCEEDS, a `fallocate || dd` fallback never
+  # fires. Writing the blocks is slower but is the only portable way.
+  if [ ! -f /swapfile ]; then
     sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+  fi
   sudo chmod 600 /swapfile
   sudo mkswap /swapfile >/dev/null
-  sudo swapon /swapfile
+  sudo swapon /swapfile || die "swapon failed -- see /swapfile above"
   grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+  note "swap now: $(awk '/^SwapTotal:/{printf "%d MB", $2/1024}' /proc/meminfo)"
   # A small box should lean on swap only under real pressure.
   echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-xavage.conf >/dev/null
   sudo sysctl -q -w vm.swappiness=10
@@ -84,16 +102,42 @@ fi
 say "Using $($PY -c 'import sys,platform; print(platform.python_implementation(), sys.version.split()[0], "at", sys.executable)')"
 
 # ------------------------------------------------------------------- install
-say "Installing yfinance into $VENV"
-[ -x "$VENV/bin/python" ] || "$PY" -m venv "$VENV"
-"$VENV/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade pip
+# Two ways in. If a bundle built by build-bundle.sh sits next to this script,
+# the dependencies are already here and nothing needs installing -- which is
+# the whole point on a box where pip is enough to starve the machine.
+BUNDLE_LIBS="$WORKER_DIR/libs"
+if [ -f "$BUNDLE_LIBS/BUNDLE_INFO" ]; then
+  say "Using the prebuilt bundle -- skipping pip entirely"
+  sed 's/^/    /' "$BUNDLE_LIBS/BUNDLE_INFO"
+  PY_EXEC="$(command -v "$PY")"
+  RUN_ENV="PYTHONPATH=$BUNDLE_LIBS"
+  export PYTHONPATH="$BUNDLE_LIBS"
+else
+
 # --only-binary=:all: refuses source builds outright. Every dependency
 # publishes manylinux/aarch64 wheels, so this never needs gcc -- and if a
 # wheel ever goes missing it fails in seconds instead of compiling numpy for
 # half an hour on a shared core.
-"$VENV/bin/python" -m pip install --no-cache-dir --disable-pip-version-check \
-  --only-binary=:all: --upgrade -r "$WORKER_DIR/requirements.txt"
-note "$("$VENV/bin/python" -m pip list --disable-pip-version-check 2>/dev/null | tail -n +3 | wc -l) packages installed"
+# --no-compile matters more than it looks: byte-compiling pandas and numpy is
+# several thousand files and one of the heaviest steps of the install on a
+# single shared core. Python writes the .pyc files lazily on first import
+# instead, which costs one slow startup and nothing after that.
+  say "No bundle found -- installing yfinance into $VENV with pip"
+  note "on a 1 GB box prefer build-bundle.sh on your laptop; see DEPLOY-ORACLE.md"
+  [ -x "$VENV/bin/python" ] || "$PY" -m venv "$VENV"
+  # Non-fatal: a slightly old pip still installs every wheel we need.
+  "$VENV/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade pip || \
+    note "pip self-upgrade skipped"
+  # --no-compile matters more than it looks: byte-compiling pandas and numpy
+  # is several thousand files and one of the heaviest steps of the install on
+  # a single shared core. Python writes the .pyc files lazily on first import
+  # instead, which costs one slow startup and nothing after that.
+  "$VENV/bin/python" -m pip install --no-cache-dir --no-compile --disable-pip-version-check \
+    --only-binary=:all: --upgrade -r "$WORKER_DIR/requirements.txt"
+  note "$("$VENV/bin/python" -m pip list --disable-pip-version-check 2>/dev/null | tail -n +3 | wc -l) packages installed"
+  PY_EXEC="$VENV/bin/python"
+  RUN_ENV=""
+fi
 
 # ---------------------------------------------------------------------- .env
 ENV_FILE="$WORKER_DIR/.env"
@@ -131,7 +175,7 @@ fi
 # dependency tree, the credentials and the egress path all work, with the
 # failure printed right here instead of buried in the journal.
 say "Running one cycle to verify"
-( cd "$WORKER_DIR" && "$VENV/bin/python" poller.py --once ) \
+( cd "$WORKER_DIR" && "$PY_EXEC" poller.py --once ) \
   || die "the test cycle failed -- fix the error above before enabling the service"
 
 # ------------------------------------------------------------------ systemd
@@ -147,7 +191,7 @@ Wants=network-online.target
 Type=simple
 User=$RUN_USER
 WorkingDirectory=$WORKER_DIR
-ExecStart=$VENV/bin/python -u poller.py
+ExecStart=$PY_EXEC -u poller.py
 Restart=always
 RestartSec=10
 TimeoutStopSec=30
@@ -160,6 +204,7 @@ MemoryHigh=600M
 MemoryMax=800M
 
 Environment=PYTHONUNBUFFERED=1
+${RUN_ENV:+Environment=$RUN_ENV}
 # glibc hands every thread its own malloc arena; on one shared core that is
 # pure resident memory for no throughput gain.
 Environment=MALLOC_ARENA_MAX=2

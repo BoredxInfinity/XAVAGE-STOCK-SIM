@@ -64,76 +64,110 @@ script handles either distro.)
 
 ## 3. Install
 
-The repo is private, so you need a GitHub personal access token with `repo`
-scope. Start each line below with a **space** so the token stays out of your
-shell history.
+On 1 GB, **build the dependencies on your laptop and upload them.** Running
+`pip` on the instance is enough to starve the machine — numpy and pandas have
+to be resolved and unpacked, and the box has no headroom for it. Doing that
+work where memory is free means the server runs no pip, no venv, no dependency
+resolver and no package download at all.
 
-**Without installing anything** — `curl` and `tar` are already on the image, so
-you never have to touch git at all. This is the lightest option and the one to
-use if `dnf` is struggling:
+### On your laptop
 
 ```bash
- mkdir -p ~/XAVAGE-STOCK-SIM && curl -fsSL \
-   -H "Authorization: Bearer <YOUR_TOKEN>" \
-   https://api.github.com/repos/BoredxInfinity/XAVAGE-STOCK-SIM/tarball/main \
-   | tar xz -C ~/XAVAGE-STOCK-SIM --strip-components=1
+cd ~/path/to/XAVAGE-STOCK-SIM
+bash worker/build-bundle.sh
+scp -i ~/Downloads/ssh-key-*.key xavage-worker-bundle.tar.gz opc@<PUBLIC_IP>:~
 ```
 
-The same command updates an existing checkout later — re-run it and restart the
-service. (It overwrites files but never deletes them, so a file removed
-upstream lingers harmlessly.)
+That produces a **~43 MB** tarball holding the worker plus all 23 dependencies,
+cross-built for Linux x86_64 / CPython 3.11. Building on an ARM Mac is fine:
+`pip` is told to resolve for the target platform, and nothing is executed, only
+unpacked.
 
-**Or with git**, if you want real `git pull`. Install `git-core`, *not* `git`:
-the `git` package is largely a metapackage that drags in `perl-Git` and ~30
-perl dependencies, while `git-core` is a few MB and provides `/usr/bin/git`.
+### On the instance
 
 ```bash
-sudo dnf install -y --setopt=install_weak_deps=False --nodocs git-core
- git clone https://<YOUR_TOKEN>@github.com/BoredxInfinity/XAVAGE-STOCK-SIM.git ~/XAVAGE-STOCK-SIM
+tar xzf xavage-worker-bundle.tar.gz
+bash xavage-worker/setup.sh
 ```
 
-Then:
+`setup.sh` sees the bundled `libs/` and skips installing anything. It still:
+
+1. adds a 2 GB swapfile **before** anything else allocates
+2. makes sure a Python 3.10+ interpreter exists (see below)
+3. asks for your Supabase URL and service-role key (input hidden)
+4. **runs one real cycle** and stops if it fails
+5. installs and starts the `xavage-worker` systemd service, pointing
+   `PYTHONPATH` at the bundled `libs/`
+
+Everything it does is logged to `~/xavage-setup.log`, line by line. If the box
+locks up and you have to reboot it from the console, that file tells you which
+phase it died in.
+
+### Updating later
+
+Rebuild and re-upload the bundle, or — if only the Python source changed and
+no dependency did — copy just the five files:
 
 ```bash
-bash ~/XAVAGE-STOCK-SIM/worker/setup.sh
+scp -i <key> worker/{poller,feed,db,config,market}.py opc@<IP>:~/xavage-worker/
+ssh -i <key> opc@<IP> 'sudo systemctl restart xavage-worker'
 ```
 
-It asks for your Supabase URL and service-role key (input hidden), and does
-everything else:
+That is a ~60 KB upload and needs nothing installed on either end.
 
-1. finds a Python 3.10+ interpreter, installing `python3.11` from Oracle
-   Linux's **own AppStream repo** if there isn't one — see the note below
-2. adds a 2 GB swapfile, since 1 GB with none is asking for an OOM kill
-3. creates a venv in `~/.xavage-venv` and installs `yfinance`
-4. writes `worker/.env` with mode `0600`
-5. **runs one real cycle** and stops if it fails, so a bad key or a blocked
-   egress path shows up right here instead of in a restart loop
-6. installs and starts a `xavage-worker` systemd service
+---
 
-Re-running it is safe — it's also the upgrade path.
+## 3b. The one thing that still needs a package
 
-### If the instance is struggling during setup
+The bundle removes pip from the server, but Python itself still has to come
+from somewhere. Oracle Linux 9 ships Python **3.9** as `/usr/bin/python3`, and
+yfinance cannot run on it — `curl_cffi` declares `Requires-Python >=3.10` and
+pandas 3 wants `>=3.11`.
 
-On 1 GB with no swap, `dnf` is the hungriest thing that will ever run on this
-box — its dependency solver routinely wants a few hundred MB, and being
-OOM-killed mid-transaction looks like "installing a package killed my server".
+**`dnf install python3.11` is the step most likely to take the box down**, and
+`setup.sh` handles it in that order for a reason: swap first, then dnf, with
+weak dependencies and docs disabled.
 
-`setup.sh` creates the swapfile **before** it touches `dnf` for exactly this
-reason. If you are installing anything by hand beforehand, add swap first:
+If you want to watch it happen rather than trust a script, run these by hand
+first — then `setup.sh` will find the interpreter and install nothing:
 
 ```bash
-sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
+# 1. swap FIRST. Use dd, not fallocate: OCI boot volumes are XFS, where
+#    fallocate produces extents that swapon rejects.
+sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+free -m                      # confirm 2048 MB of swap before going on
+
+# 2. optional, but it buys real headroom: the Oracle Cloud Agent is a
+#    substantial resident process on a 1 GB box. Stop it for the install.
+sudo systemctl stop oracle-cloud-agent oracle-cloud-agent-updater
+
+# 3. now the install, kept to the interpreter and nothing else
+sudo dnf install -y --setopt=install_weak_deps=False --setopt=keepcache=0 \
+  --nodocs python3.11
+sudo dnf clean all
+
+# 4. put the agent back
+sudo systemctl start oracle-cloud-agent oracle-cloud-agent-updater
 ```
 
-Then keep every `dnf` call minimal — no weak dependencies, no docs, no
-retained cache:
+Check it worked: `python3.11 -V` should print `Python 3.11.x`.
+
+### If it froze and the console shows no metrics
+
+That is the box being starved, not a crash — the monitoring agent stops
+reporting because it is starved too. Recover with **Instance details → Reboot**
+in the console (a hard reset, since it will not shut down cleanly), then:
 
 ```bash
-sudo dnf install -y --setopt=install_weak_deps=False --setopt=keepcache=0 --nodocs <pkg>
-sudo dnf clean all
+cat ~/xavage-setup.log          # which phase it died in
+free -m                         # is swap actually on?
+dmesg -T | grep -i 'killed process'
+sudo grep -i 'out of memory' /var/log/messages | tail
 ```
+
+If `free -m` shows `Swap: 0`, that is the cause, and step 1 above is the fix.
 
 ### Would a custom image help?
 
@@ -153,37 +187,25 @@ The honest comparison: with swap in place, `dnf install python3.11` is a
 one-off couple of minutes. A custom image is worth it if you expect to rebuild
 this machine repeatedly, and not otherwise.
 
-### Why it installs python3.11
-
-Oracle Linux 9 ships Python **3.9** as `/usr/bin/python3`, and yfinance cannot
-run on it: `curl_cffi` declares `Requires-Python >=3.10` and pandas 3 wants
-`>=3.11`. `python3.11` is a stock AppStream RPM — the same repo the base image
-already trusts, a prebuilt binary, about 15 seconds. Nothing is compiled and
-no repo is added. If the image already has 3.10+, the script uses that and
-installs nothing.
-
 ### Keeping setup alive when you disconnect
 
-The install takes a few minutes and dies with your SSH session.
+With the bundle there is nothing to download and the script finishes in well
+under a minute, so this matters far less than it used to. The one slow step is
+the first cycle's chart backfill, and that happens under systemd rather than in
+your shell.
 
-```bash
-sudo dnf install -y tmux
-tmux new -s setup
-bash ~/XAVAGE-STOCK-SIM/worker/setup.sh
-```
-
-`Ctrl-B` then `D` detaches; `tmux attach -t setup` picks it back up.
-
-Or run it fully unattended:
+If you still want it detached — say you are doing the `dnf` step by hand over a
+flaky link:
 
 ```bash
  SUPABASE_URL='https://<ref>.supabase.co' \
  SUPABASE_SERVICE_ROLE_KEY='eyJ...' \
-   nohup bash ~/XAVAGE-STOCK-SIM/worker/setup.sh > ~/setup.log 2>&1 &
+   nohup bash ~/xavage-worker/setup.sh > /dev/null 2>&1 &
 ```
 
-Once it finishes none of this matters — systemd owns the process and restarts
-it on boot.
+Either way the script tees everything to `~/xavage-setup.log`, so you can
+reconnect and `tail -f` it. Once it finishes none of this matters — systemd
+owns the process and restarts it on boot.
 
 ---
 
@@ -221,8 +243,8 @@ free -m
 ## 5. Day-to-day
 
 ```bash
-# update to the latest code
-cd ~/XAVAGE-STOCK-SIM && git pull && sudo systemctl restart xavage-worker
+# update the worker source (see "Updating later" above for the scp command)
+sudo systemctl restart xavage-worker
 
 # logs
 journalctl -u xavage-worker -f              # follow
@@ -234,11 +256,8 @@ sudo systemctl restart xavage-worker
 sudo systemctl stop xavage-worker
 ```
 
-If you installed without git, update with the same curl command from step 3,
-then restart.
-
-If an update brings a new dependency (it rarely will), re-run
-`bash worker/setup.sh` instead of just restarting.
+If an update brings a new dependency (it rarely will), rebuild the bundle on
+your laptop and re-upload it, then re-run `setup.sh`.
 
 To test a change without disturbing the service:
 
