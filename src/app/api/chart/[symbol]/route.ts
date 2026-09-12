@@ -4,13 +4,13 @@ import { createClient } from "@/lib/supabase/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Three ranges only. A five-week competition has no use for a 1Y chart, and
+// dropping it means the worker no longer maintains a year of daily bars per
+// symbol -- which is what makes a fast history refresh affordable.
 const RANGES: Record<string, { interval: string; days: number }> = {
   "1D": { interval: "1m", days: 1 },
   "5D": { interval: "5m", days: 5 },
   "1M": { interval: "1d", days: 31 },
-  "3M": { interval: "1d", days: 93 },
-  "6M": { interval: "1d", days: 186 },
-  "1Y": { interval: "1d", days: 366 },
 };
 
 /** OHLCV bars for the chart, served from the local price_bars table. */

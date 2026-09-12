@@ -8,8 +8,22 @@ import {
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/format";
 
-const RANGES = ["1D", "5D", "1M", "3M", "6M", "1Y"] as const;
+const RANGES = ["1D", "5D", "1M"] as const;
 type Range = (typeof RANGES)[number];
+
+/**
+ * Per range: the bar width in seconds, and how often to re-pull history.
+ *
+ * The refetch exists because bars used to be fetched once, on mount, and never
+ * again -- so a chart left open simply stopped growing. The intervals are set
+ * against how often the worker actually writes each series: 1m bars land every
+ * cycle (~20s), 5m and 1d on the history timer.
+ */
+const RANGE_SPEC: Record<Range, { stepSec: number; refetchMs: number }> = {
+  "1D": { stepSec: 60, refetchMs: 30_000 },
+  "5D": { stepSec: 300, refetchMs: 120_000 },
+  "1M": { stepSec: 86_400, refetchMs: 300_000 },
+};
 
 interface Bar {
   time: number; open: number; high: number; low: number; close: number; volume: number;
@@ -133,45 +147,80 @@ export function PriceChart({
     chartRef.current?.timeScale().fitContent();
   }
 
-  /* ---- load bars ---- */
+  /* ---- load bars, and keep loading them ---- */
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
 
-    fetch(`/api/chart/${encodeURIComponent(symbol)}?range=${range}`)
-      .then((r) => r.json())
-      .then((json: { bars?: Bar[]; error?: string }) => {
-        if (cancelled) return;
-        if (json.error) { setError(json.error); return; }
-        setBars(json.bars ?? []);
-      })
-      .catch(() => !cancelled && setError("Could not load chart data."))
-      .finally(() => !cancelled && setLoading(false));
+    function load(initial: boolean) {
+      fetch(`/api/chart/${encodeURIComponent(symbol)}?range=${range}`)
+        .then((r) => r.json())
+        .then((json: { bars?: Bar[]; error?: string }) => {
+          if (cancelled) return;
+          if (json.error) { if (initial) setError(json.error); return; }
+          setBars(json.bars ?? []);
+        })
+        // A failed refresh keeps the bars already on screen; only the first
+        // load has nothing to fall back to.
+        .catch(() => { if (initial && !cancelled) setError("Could not load chart data."); })
+        .finally(() => { if (initial && !cancelled) setLoading(false); });
+    }
 
-    return () => { cancelled = true; };
+    load(true);
+    const timer = setInterval(() => load(false), RANGE_SPEC[range].refetchMs);
+    return () => { cancelled = true; clearInterval(timer); };
   }, [symbol, range]);
 
-  /* ---- push the live price onto the last bar ---- */
+  /* ---- carry the live price on the bar it actually belongs to ---- */
+  //
+  // This used to write to `bars[bars.length - 1]` -- the newest bar AT LOAD
+  // TIME. Because the bar array never changed, an hour-old candle kept
+  // absorbing every subsequent tick instead of new candles appearing. Bucket
+  // the clock to the range's step instead, so the working bar rolls over on
+  // its own and the chart advances between history refreshes.
+  const working = useRef<Bar | null>(null);
+
+  useEffect(() => { working.current = null; }, [symbol, range]);
+
   useEffect(() => {
     if (!livePrice || bars.length === 0 || !mainRef.current) return;
+
+    const { stepSec } = RANGE_SPEC[range];
     const last = bars[bars.length - 1];
+    const bucket = Math.floor(Date.now() / 1000 / stepSec) * stepSec;
+
+    // Never draw behind the history we were given: if the server's newest bar
+    // is ahead of our bucket (clock skew, a slow refresh), sit on that one.
+    const time = Math.max(bucket, last.time);
+
+    let bar = working.current;
+    if (!bar || bar.time !== time) {
+      const open = time === last.time ? last.open : livePrice;
+      bar = {
+        time,
+        open,
+        high: time === last.time ? Math.max(last.high, livePrice) : livePrice,
+        low: time === last.time ? Math.min(last.low, livePrice) : livePrice,
+        close: livePrice,
+        volume: time === last.time ? last.volume : 0,
+      };
+    } else {
+      bar = { ...bar, high: Math.max(bar.high, livePrice), low: Math.min(bar.low, livePrice), close: livePrice };
+    }
+    working.current = bar;
 
     if (mode === "candles") {
       (mainRef.current as ISeriesApi<"Candlestick">).update({
-        time: last.time as UTCTimestamp,
-        open: last.open,
-        high: Math.max(last.high, livePrice),
-        low: Math.min(last.low, livePrice),
-        close: livePrice,
+        time: bar.time as UTCTimestamp,
+        open: bar.open, high: bar.high, low: bar.low, close: bar.close,
       });
     } else {
       (mainRef.current as ISeriesApi<"Area">).update({
-        time: last.time as UTCTimestamp,
-        value: livePrice,
+        time: bar.time as UTCTimestamp, value: bar.close,
       });
     }
-  }, [livePrice, bars, mode]);
+  }, [livePrice, bars, mode, range]);
 
   return (
     <div className="flex flex-col">

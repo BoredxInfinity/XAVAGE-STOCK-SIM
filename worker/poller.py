@@ -107,6 +107,8 @@ class Worker:
         self.last_profile_run = 0.0
         self.last_closes_run = 0.0
         self.last_history_run = 0.0
+        # Per-interval timers: 5m and 1d age at different rates.
+        self.history_run: dict[str, float] = {}
         self.last_settings_run = 0.0
         self._symbols: list[str] = []
         self._mode = "regular"
@@ -320,6 +322,33 @@ class Worker:
             log.error("match_orders failed: %s", exc)
             return None
 
+    def due_history(self) -> list[tuple[str, str]]:
+        """Which chart series need pulling, and over what window.
+
+        The two series age at completely different rates, so giving them one
+        shared 30-minute timer made the 5D chart up to half an hour stale to
+        keep the 1M chart cheap. They are now independent:
+
+          5m bars close every five minutes  -> refresh every two
+          1d bars only move within today    -> refresh every ten
+
+        And once a series is seeded the deep history is already stored, so
+        only the tail can hold anything new. Asking for a short window keeps
+        both the download and the transient memory small, which is what makes
+        the faster cadence affordable on a 945 MB box.
+        """
+        now = time.monotonic()
+        due: list[tuple[str, str]] = []
+        for interval, every, seed_period, tail_period in (
+            ("5m", self.cfg.history_interval, "5d", "1d"),
+            ("1d", self.cfg.daily_interval, "1mo", "5d"),
+        ):
+            if now - self.history_run.get(interval, 0.0) < every:
+                continue
+            seeded = interval in self.history_seeded
+            due.append((tail_period if seeded else seed_period, interval))
+        return due
+
     def refresh_history(self, symbols: list[str]) -> int:
         """
         The longer chart ranges (5D and 1Y). Bulk-downloaded per interval
@@ -330,16 +359,7 @@ class Worker:
         The 1m series is NOT refreshed here; it rides the quote download.
         """
         written = 0
-        for period, interval in (("5d", "5m"), ("1y", "1d")):
-            # Once the deep history is in, only the tail can hold anything new,
-            # so ask for a short window. The high-water marks shrank the write
-            # but not the download -- a full 1y/1d frame was rebuilt every 30
-            # minutes to extract a few hundred rows, which on a 1 GB box is
-            # ~60 MB of transient allocation for nothing. Downtime is not a
-            # risk: the marks live in memory, so a restart re-seeds in full.
-            if interval in self.history_seeded:
-                period = "1d" if interval == "5m" else "5d"
-
+        for period, interval in self.due_history():
             bars, marks = fetch_bars_bulk(
                 symbols, period, interval, self.cfg.batch_size,
                 self.marks, self.cfg.download_threads,
@@ -349,6 +369,7 @@ class Worker:
             if not failed:
                 self.marks.update(marks)
                 self.history_seeded.add(interval)
+                self.history_run[interval] = time.monotonic()
             if not _running:
                 break
 
@@ -485,11 +506,11 @@ class Worker:
         # The 30-minute history refresh is the worker's largest transient
         # allocation, so it is always shipped with its duration and memory --
         # this is the stage to look at first when the box gets into trouble.
-        if time.monotonic() - self.last_history_run > self.cfg.history_interval:
+        due = self.due_history()
+        if due:
             with stage("history", self.cycle, ship=True) as d:
+                d["series"] = [f"{p}/{i}" for p, i in due]
                 d["rows"] = self.refresh_history(symbols)
-                d["seeded"] = sorted(self.history_seeded)
-            self.last_history_run = time.monotonic()
 
         if time.monotonic() - self.last_profile_run > 600:
             with stage("profiles", self.cycle) as d:

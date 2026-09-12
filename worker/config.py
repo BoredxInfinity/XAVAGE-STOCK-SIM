@@ -57,6 +57,7 @@ class Config:
     poll_interval: int
     idle_interval: int
     history_interval: int
+    daily_interval: int
     batch_size: int
     max_symbols: int
     bars_per_symbol: int
@@ -109,7 +110,16 @@ class Config:
             service_role_key=key,
             poll_interval=_int("POLL_INTERVAL_SECONDS", 5),
             idle_interval=_int("IDLE_INTERVAL_SECONDS", 120),
-            history_interval=_int("HISTORY_INTERVAL_SECONDS", 1800),
+            # The 5D chart's series, refreshed at one bar width. Faster buys
+            # nothing: the client already carries the live price on the bar
+            # currently forming, so this timer only governs how quickly a
+            # *closed* 5m bar becomes exact. And it is not free -- a tail
+            # refresh costs ~14s on the instance and runs inside the same loop
+            # as prices, so every history pull delays the next quote.
+            history_interval=_int("HISTORY_INTERVAL_SECONDS", 300),
+            # The 1M chart's series. Only today's bar moves, and it moves
+            # slowly, so this does not need the 5m cadence.
+            daily_interval=_int("DAILY_INTERVAL_SECONDS", 600),
             batch_size=_int("BATCH_SIZE", 60),
             max_symbols=_int("MAX_SYMBOLS", 400),
             bars_per_symbol=_int("BARS_PER_SYMBOL", 500),
