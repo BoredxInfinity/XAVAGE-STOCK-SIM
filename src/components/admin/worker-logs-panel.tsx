@@ -6,7 +6,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, ScrollText } from "lucide-rea
 import { Panel } from "@/components/ui/panel";
 import { createClient } from "@/lib/supabase/client";
 import { useNow } from "@/hooks/use-now";
-import { cn, relative } from "@/lib/format";
+import { cn, duration, relative } from "@/lib/format";
 import type { WorkerLog, WorkerLogLevel } from "@/lib/database.types";
 
 /** Only two filters matter in practice: "what happened" and "what went wrong". */
@@ -22,13 +22,6 @@ const LEVEL_STYLE: Record<WorkerLogLevel, string> = {
   ERROR: "text-[var(--color-down)]",
   CRITICAL: "text-[var(--color-down)] font-bold",
 };
-
-function duration(ms: number | null) {
-  if (ms == null) return null;
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60_000)}m${String(Math.floor((ms % 60_000) / 1000)).padStart(2, "0")}s`;
-}
 
 export function WorkerLogsPanel() {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["key"]>("all");

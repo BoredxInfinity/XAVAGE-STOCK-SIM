@@ -13,6 +13,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useAnnouncements, useLeaderboard, useMarketStatus } from "@/hooks/use-app-data";
 import { useNow } from "@/hooks/use-now";
 import { WorkerLogsPanel } from "@/components/admin/worker-logs-panel";
+import { WorkerTimingChart } from "@/components/admin/worker-timing-chart";
 import { cn, money, pct, relative, stamp } from "@/lib/format";
 
 export function OverviewView() {
@@ -234,7 +235,10 @@ export function OverviewView() {
       </div>
 
       {/* What the price worker is actually doing. Its own journal lives on a
-          box nobody watches, so this is the only view an organiser gets. */}
+          box nobody watches, so this is the only view an organiser gets. The
+          chart is the same rows read as a trend: drift in the cycle time
+          shows there long before anything in the log looks wrong. */}
+      <WorkerTimingChart />
       <WorkerLogsPanel />
     </div>
   );

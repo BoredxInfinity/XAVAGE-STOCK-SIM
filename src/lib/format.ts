@@ -38,6 +38,18 @@ export function qtyText(value: number | null | undefined) {
   return Number.isInteger(value) ? value.toLocaleString("en-US") : String(parseFloat(value.toFixed(6)));
 }
 
+/**
+ * Milliseconds as a stage duration — the same three bands the worker itself
+ * prints (`logbook._human`), so a line in the log table and a point on the
+ * timing chart read identically.
+ */
+export function duration(ms: number | null | undefined) {
+  if (ms == null || Number.isNaN(ms)) return "—";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60_000)}m${String(Math.floor((ms % 60_000) / 1000)).padStart(2, "0")}s`;
+}
+
 export function compactNum(value: number | null | undefined) {
   if (value == null || Number.isNaN(value)) return "—";
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(value);
