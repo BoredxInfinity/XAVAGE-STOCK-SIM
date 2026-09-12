@@ -38,6 +38,8 @@ export function PriceChart({
   const volRef = useRef<ISeriesApi<"Histogram"> | null>(null);
 
   const [range, setRange] = useState<Range>("1D");
+  // Which range the bars currently in state were fetched for.
+  const barsRange = useRef<Range | null>(null);
   const [mode, setMode] = useState<"area" | "candles">("area");
   const [bars, setBars] = useState<Bar[]>([]);
   const [loading, setLoading] = useState(true);
@@ -123,6 +125,9 @@ export function PriceChart({
     const series = mainRef.current;
     if (!series) return;
 
+    // setData resets the series, so this is the new floor for update().
+    lastWritten.current = list.length ? list[list.length - 1].time : null;
+
     if (mode === "candles") {
       (series as ISeriesApi<"Candlestick">).setData(
         list.map((b) => ({
@@ -159,6 +164,7 @@ export function PriceChart({
         .then((json: { bars?: Bar[]; error?: string }) => {
           if (cancelled) return;
           if (json.error) { if (initial) setError(json.error); return; }
+          barsRange.current = range;
           setBars(json.bars ?? []);
         })
         // A failed refresh keeps the bars already on screen; only the first
@@ -180,11 +186,19 @@ export function PriceChart({
   // the clock to the range's step instead, so the working bar rolls over on
   // its own and the chart advances between history refreshes.
   const working = useRef<Bar | null>(null);
+  // The newest time actually written to the series -- which includes the
+  // synthetic working bar, and so can be AHEAD of the newest bar in `bars`.
+  const lastWritten = useRef<number | null>(null);
 
   useEffect(() => { working.current = null; }, [symbol, range]);
 
   useEffect(() => {
     if (!livePrice || bars.length === 0 || !mainRef.current) return;
+
+    // Only overlay onto history that belongs to the range now selected.
+    // Between clicking 5D and its bars arriving, `bars` is still the 1D array,
+    // and bucketing those to a 5-minute step lands BEHIND what is on screen.
+    if (barsRange.current !== range) return;
 
     const { stepSec } = RANGE_SPEC[range];
     const last = bars[bars.length - 1];
@@ -193,6 +207,11 @@ export function PriceChart({
     // Never draw behind the history we were given: if the server's newest bar
     // is ahead of our bucket (clock skew, a slow refresh), sit on that one.
     const time = Math.max(bucket, last.time);
+
+    // ...and never behind what is already plotted. lightweight-charts throws
+    // "Cannot update oldest data" on a backwards update, which takes the whole
+    // page down rather than dropping one tick.
+    if (lastWritten.current !== null && time < lastWritten.current) return;
 
     let bar = working.current;
     if (!bar || bar.time !== time) {
@@ -220,6 +239,7 @@ export function PriceChart({
         time: bar.time as UTCTimestamp, value: bar.close,
       });
     }
+    lastWritten.current = bar.time;
   }, [livePrice, bars, mode, range]);
 
   return (
