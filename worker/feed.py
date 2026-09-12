@@ -301,13 +301,22 @@ def fetch_intraday(
     quotes: list[dict] = []
     bars: list[dict] = []
     new_marks: dict[tuple[str, str], Any] = {}
-    iso = datetime.now(timezone.utc).strftime(_ISO_UTC)
     state = normalise_state(None)
     prev_closes = prev_closes or {}
     marks = marks or {}
 
     for batch in _chunks(symbols, batch_size):
         frame = _download(batch, "2d", "1m", prepost=True, threads=threads)
+        # Stamped AFTER the download, and per batch.
+        #
+        # This used to be a single reading taken before the first request went
+        # out, so every quote in the cycle was born already as stale as the
+        # whole download took -- on the micro instance that is tens of seconds,
+        # and the last batch wore the first batch's clock. Participants saw a
+        # price that had just arrived described as "updated 19s ago", and the
+        # engine's own staleness check (price_staleness_seconds) was spending
+        # that budget on our download rather than on the price going off.
+        iso = datetime.now(timezone.utc).strftime(_ISO_UTC)
 
         for symbol, sub in _split(frame, batch):
             try:
