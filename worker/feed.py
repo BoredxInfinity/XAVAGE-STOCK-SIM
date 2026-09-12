@@ -47,6 +47,37 @@ except Exception:  # noqa: BLE001 - caching is an optimisation, never fatal
 log = logging.getLogger("xavage.feed")
 
 _ISO_UTC = "%Y-%m-%dT%H:%M:%S+00:00"
+
+# Yahoo stamps the bar that is still forming with the moment you asked, not
+# with its own boundary -- so polling every ~20s yields 09:31:00, then
+# 09:31:22, then 09:31:41, all of which are "the 09:31 bar". Each one is a
+# distinct primary key, so they accumulate as sliver candles beside the real
+# one instead of updating it. Floor intraday stamps to the interval and the
+# upsert collapses them, which is what the inclusive high-water mark assumed
+# all along.
+#
+# Daily bars are deliberately absent: they arrive aligned to the exchange's
+# own day, and flooring those to a UTC midnight would shift the key and
+# duplicate every bar already stored.
+_FLOOR_TO = {"1m": "1min", "2m": "2min", "5m": "5min", "15m": "15min",
+             "30m": "30min", "60m": "60min", "90m": "90min", "1h": "1h"}
+
+# A bar with no volume and an implausible range is Yahoo junk, not a trade.
+# Real minute bars on these names run a few tenths of a percent; the ones
+# being discarded here ran 3.6% to 9.4% on zero volume, which is what drew
+# those enormous candles out of an otherwise flat post-market.
+_JUNK_RANGE_PCT = 0.02
+
+# The same bad data also arrives flattened -- o=h=l=c, zero volume, sitting
+# 3-4% off the real price, which has no range for the rule above to catch.
+# Those only give themselves away against their neighbours, so a zero-volume
+# bar that jumps this far from the last accepted close is dropped too.
+_JUNK_JUMP_PCT = 0.02
+
+# ...but only when the previous bar is recent. Across a session boundary a
+# genuine gap of several percent is ordinary, and the first print of a
+# pre-market session can legitimately carry no volume.
+_NEIGHBOUR_WINDOW_SEC = 900
 _REGULAR_OPEN = pd.Timedelta(hours=9, minutes=30)
 _REGULAR_CLOSE = pd.Timedelta(hours=16)
 _NAN = float("nan")
@@ -133,8 +164,23 @@ def _rows_to_bars(symbol: str, interval: str, frame) -> list[dict]:
     if frame is None or frame.empty:
         return []
 
+    idx = _to_utc_index(frame)
+    floor = _FLOOR_TO.get(interval)
+    if floor:
+        idx = idx.floor(floor)
+        # Flooring can collapse two source rows onto one minute (the settled
+        # bar and the forming one). Keeping both would put duplicate keys in a
+        # single upsert, which Postgres rejects outright with "ON CONFLICT DO
+        # UPDATE command cannot affect row a second time" -- losing the whole
+        # chunk. Keep the later row: it is the more complete view of that bar.
+        dup = idx.duplicated(keep="last")
+        if dup.any():
+            frame = frame[~dup]
+            idx = idx[~dup]
+
     n = len(frame)
-    stamps = _to_utc_index(frame).strftime(_ISO_UTC)
+    stamps = idx.strftime(_ISO_UTC)
+    seconds = idx.asi8 // 1_000_000_000
     closes = _column(frame, "Close", n)
     opens = _column(frame, "Open", n)
     highs = _column(frame, "High", n)
@@ -143,11 +189,30 @@ def _rows_to_bars(symbol: str, interval: str, frame) -> list[dict]:
 
     rows: list[dict] = []
     append = rows.append
+    prev_close = 0.0
+    prev_sec = 0
     for i in range(n):
         close = closes[i]
         if not close > 0:  # also rejects NaN, which fails every comparison
             continue
         o, h, l, v = opens[i], highs[i], lows[i], volumes[i]
+        traded = v > 0
+
+        # Two shapes of the same Yahoo junk, both zero-volume. Volume is the
+        # tell: every bad print observed had none, and every bar with real
+        # volume had a sane range, so neither rule can touch a traded bar.
+        if not traded:
+            # a) an implausible range within the bar
+            if h > 0 and l > 0 and (h - l) > close * _JUNK_RANGE_PCT:
+                continue
+            # b) a flat bar parked well away from its neighbours
+            if (prev_close > 0
+                    and seconds[i] - prev_sec <= _NEIGHBOUR_WINDOW_SEC
+                    and abs(close - prev_close) > prev_close * _JUNK_JUMP_PCT):
+                continue
+
+        prev_close, prev_sec = close, seconds[i]
+
         append({
             "symbol": symbol,
             "interval": interval,
