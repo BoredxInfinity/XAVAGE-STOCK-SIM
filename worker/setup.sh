@@ -195,6 +195,12 @@ Documentation=https://github.com/BoredxInfinity/XAVAGE-STOCK-SIM
 After=network-online.target
 Wants=network-online.target
 
+# Never stop retrying. With the default limiter (5 starts / 10s) a unit that
+# trips it lands in "failed" and stays there until someone runs
+# `systemctl reset-failed` by hand -- which during a competition means the
+# feed is down until a human notices, rather than for RestartSec.
+StartLimitIntervalSec=0
+
 [Service]
 Type=simple
 User=$RUN_USER
@@ -203,6 +209,9 @@ ExecStart=$PY_EXEC -u poller.py
 Restart=always
 RestartSec=10
 TimeoutStopSec=30
+# A process killed by the kernel OOM killer should bring the service back,
+# not park the unit. Pairs with StartLimitIntervalSec=0 above.
+OOMPolicy=continue
 
 # Steady state measures ~260 MB. MemoryHigh reclaims under pressure, MemoryMax
 # is the hard stop -- together they keep the worker from being the process that

@@ -64,6 +64,15 @@ log = logging.getLogger("xavage.worker")
 
 _running = True
 
+
+def _trim_heap() -> None:
+    """Ask glibc to return free heap to the OS. No-op where unavailable."""
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:  # noqa: BLE001 - macOS, musl, or missing symbol
+        pass
+
 # How long the universe and the admin's market-hours setting may be reused
 # before re-reading them. Both change by hand, minutes apart at most, and
 # re-reading them every 5s was two thirds of the worker's request volume.
@@ -93,6 +102,9 @@ class Worker:
         self.marks: dict[tuple[str, str], object] = {}
         # Official previous closes, refreshed from daily bars a few times a day
         self.prev_closes: dict[str, float] = {}
+        # Intervals whose deep history has been seeded once, so later refreshes
+        # can ask for a short window instead of the full range.
+        self.history_seeded: set[str] = set()
         self.cycle = 0
 
     # ---------------------------------------------------------------- helpers
@@ -232,6 +244,15 @@ class Worker:
         """
         written = 0
         for period, interval in (("5d", "5m"), ("1y", "1d")):
+            # Once the deep history is in, only the tail can hold anything new,
+            # so ask for a short window. The high-water marks shrank the write
+            # but not the download -- a full 1y/1d frame was rebuilt every 30
+            # minutes to extract a few hundred rows, which on a 1 GB box is
+            # ~60 MB of transient allocation for nothing. Downtime is not a
+            # risk: the marks live in memory, so a restart re-seeds in full.
+            if interval in self.history_seeded:
+                period = "1d" if interval == "5m" else "5d"
+
             bars, marks = fetch_bars_bulk(
                 symbols, period, interval, self.cfg.batch_size,
                 self.marks, self.cfg.download_threads,
@@ -240,8 +261,14 @@ class Worker:
             written += rows
             if not failed:
                 self.marks.update(marks)
+                self.history_seeded.add(interval)
             if not _running:
                 break
+
+        # glibc holds freed heap rather than handing it back, and these frames
+        # are the largest transient allocation the worker makes. Without this
+        # the resident set only ever ratchets upward.
+        _trim_heap()
         return written
 
     def enrich_profiles(self) -> int:
