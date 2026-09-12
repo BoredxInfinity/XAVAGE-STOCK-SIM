@@ -47,7 +47,11 @@ command -v sudo >/dev/null || die "sudo is required"
 # killed my server" rather than "you have no swap".
 mem_kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
 swap_kb=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo)
-if [ "$mem_kb" -lt 2000000 ] && [ "$swap_kb" -lt 262144 ]; then
+# Compare swap against RAM, not against a fixed floor. OCI images ship their
+# own /.swapfile sized to match memory, and the old `swap < 256MB` test saw
+# that, decided there was "enough", and skipped -- on a box with 498 MB of
+# usable RAM, which is how a 97 MB spike ended up thrashing the machine.
+if [ "$mem_kb" -lt 2000000 ] && [ "$swap_kb" -lt $(( mem_kb * 2 )) ]; then
   say "Only $((mem_kb/1024)) MB RAM and no swap -- adding a 2 GB swapfile"
   # dd, not fallocate. OCI boot volumes are XFS, where fallocate produces
   # unwritten extents that swapon rejects with "Invalid argument" -- and
@@ -182,12 +186,28 @@ fi
 # One real cycle before anything is enabled: proves the interpreter, the
 # dependency tree, the credentials and the egress path all work, with the
 # failure printed right here instead of buried in the journal.
-say "Running one cycle to verify"
-( cd "$WORKER_DIR" && "$PY_EXEC" poller.py --once ) \
+say "Pre-flight check (config, database, price feed)"
+( cd "$WORKER_DIR" && "$PY_EXEC" poller.py --check ) \
   || die "the test cycle failed -- fix the error above before enabling the service"
 
 # ------------------------------------------------------------------ systemd
-say "Installing the $SERVICE service"
+# Derive the cgroup limits from real RAM, leaving room for the OS. On a box
+# reporting less than the worker needs, warn rather than write a limit that
+# guarantees an OOM kill.
+mem_now_mb=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
+MEM_HIGH=$(( mem_now_mb * 45 / 100 ))
+MEM_MAX=$(( mem_now_mb * 65 / 100 ))
+[ "$MEM_HIGH" -lt 320 ] && MEM_HIGH=320
+[ "$MEM_MAX"  -lt 420 ] && MEM_MAX=420
+if [ "$mem_now_mb" -lt 700 ]; then
+  note "WARNING: only ${mem_now_mb} MB of RAM visible. If this shape should have"
+  note "  more, a kdump crashkernel reservation is the usual cause:"
+  note "    cat /sys/kernel/kexec_crash_size"
+  note "    sudo systemctl disable --now kdump"
+  note "    sudo grubby --update-kernel=ALL --args=crashkernel=no && sudo reboot"
+fi
+
+say "Installing the $SERVICE service (MemoryHigh=${MEM_HIGH}M, MemoryMax=${MEM_MAX}M of ${mem_now_mb}M)"
 sudo tee "$UNIT" >/dev/null <<EOF
 [Unit]
 Description=Xavage price worker
@@ -213,12 +233,14 @@ TimeoutStopSec=30
 # not park the unit. Pairs with StartLimitIntervalSec=0 above.
 OOMPolicy=continue
 
-# Steady state measures ~260 MB. MemoryHigh reclaims under pressure, MemoryMax
-# is the hard stop -- together they keep the worker from being the process that
-# takes down a 1 GB box, without tripping during the one-time backfill.
+# Sized from the RAM this box actually has, not from the shape's nominal spec.
+# Hardcoding 600M/800M was useless here: a kdump crashkernel reservation left
+# only 498 MB visible, so both limits sat ABOVE total RAM and could never fire
+# -- the kernel hit system-wide pressure first and the box wedged instead of
+# systemd killing one process. Steady state is ~260 MB.
 MemoryAccounting=yes
-MemoryHigh=600M
-MemoryMax=800M
+MemoryHigh=${MEM_HIGH}M
+MemoryMax=${MEM_MAX}M
 
 Environment=PYTHONUNBUFFERED=1
 ${RUN_ENV:+Environment=$RUN_ENV}
@@ -234,6 +256,8 @@ Environment=OMP_NUM_THREADS=1
 WantedBy=multi-user.target
 EOF
 
+LOG_FILE_HINT="${XAVAGE_LOG_FILE:-$HOME/xavage-worker.log}"
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now "$SERVICE"
 sleep 3
@@ -243,8 +267,10 @@ cat <<EOF
 
 $(say "Done")
     logs      journalctl -u $SERVICE -f
-    memory    systemctl show $SERVICE -p MemoryCurrent
+    memory    systemctl show $SERVICE -p MemoryCurrent -p MemoryPeak
     restart   sudo systemctl restart $SERVICE
-    update    cd $(dirname "$WORKER_DIR") && git pull && sudo systemctl restart $SERVICE
+    check     $PY_EXEC poller.py --check          # config/db/feed, ~2s
+    logs file $LOG_FILE_HINT
+    update    re-upload the worker .py files, then restart (see DEPLOY-ORACLE.md)
 
 EOF

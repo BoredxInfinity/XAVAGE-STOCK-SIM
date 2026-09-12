@@ -37,6 +37,9 @@ from datetime import datetime, timezone  # noqa: E402
 
 from config import Config  # noqa: E402
 from db import Postgrest, PostgrestError  # noqa: E402
+from logbook import (  # noqa: E402
+    SupabaseLogHandler, add_file_handler, mem_snapshot, rss_mb, stage,
+)
 from feed import fetch_bars_bulk, fetch_daily_closes, fetch_intraday, fetch_profile  # noqa: E402
 from market import just_closed, now_ny, session_state  # noqa: E402
 
@@ -59,6 +62,14 @@ logging.basicConfig(level=logging.INFO, handlers=[_stdout, _stderr])
 # self-healing (the symbol is retried next cycle), so keep them out of the
 # error stream where they would look like worker failures.
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
+# A rolling 48h of history on disk, independent of journald -- the OCI image
+# ships journald volatile, so a reboot otherwise takes the evidence with it.
+_LOG_FILE = add_file_handler()
+
+# ...and the subset worth showing an organiser in Admin -> Control room.
+_shipper = SupabaseLogHandler()
+logging.getLogger().addHandler(_shipper)
 
 log = logging.getLogger("xavage.worker")
 
@@ -89,6 +100,8 @@ class Worker:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.db = Postgrest(cfg.supabase_url, cfg.service_role_key)
+        _shipper.attach(self.db)
+        self.last_prune = 0.0
         self.last_state = session_state()
         self.last_snapshot = 0.0
         self.last_profile_run = 0.0
@@ -213,6 +226,17 @@ class Worker:
         chunk = 500
         written = failed = 0
         total = (len(bars) + chunk - 1) // chunk
+        started = time.monotonic()
+        # A cold start writes ~160k rows over several minutes. The cycle line
+        # is only printed at the end, so without this the worker looks hung at
+        # exactly the moment someone is most likely to kill it.
+        chatty = total > 20
+
+        if chatty:
+            log.info("writing %d bars in %d chunks - this is the slow part",
+                     len(bars), total,
+                     extra={"event": "backfill", "cycle": self.cycle,
+                            "detail": {"rows": len(bars), "chunks": total}, "ship": True})
 
         for n, i in enumerate(range(0, len(bars), chunk), start=1):
             batch = bars[i : i + chunk]
@@ -222,8 +246,24 @@ class Worker:
                 written += len(batch)
             except PostgrestError as exc:
                 # Never abandon the remaining chunks over one bad request.
-                log.warning("price_bars chunk %d/%d dropped: %s", n, total, exc)
+                log.warning("price_bars chunk %d/%d dropped: %s", n, total, exc,
+                            extra={"event": "backfill", "cycle": self.cycle})
                 failed += 1
+
+            if chatty and n % 20 == 0:
+                done = time.monotonic() - started
+                rate = written / done if done else 0
+                log.info("  ...%d/%d chunks, %d rows, %.0f rows/s, ~%.0fs left",
+                         n, total, written, rate,
+                         (len(bars) - written) / rate if rate else 0)
+
+        if chatty:
+            log.info("backfill wrote %d rows in %.0fs (%d chunk(s) lost)",
+                     written, time.monotonic() - started, failed,
+                     extra={"event": "backfill", "cycle": self.cycle,
+                            "duration_ms": int((time.monotonic() - started) * 1000),
+                            "detail": {"rows": written, "failed_chunks": failed},
+                            "ship": True})
         return written, failed
 
     def run_matching(self) -> dict | None:
@@ -312,6 +352,46 @@ class Worker:
         except PostgrestError as exc:
             log.error("take_snapshots failed: %s", exc)
 
+    # ------------------------------------------------------------------ check
+    def check(self) -> int:
+        """Fast pre-flight: config, database, and the price feed. No writes."""
+        ok = True
+        mem = mem_snapshot()
+        log.info("python %s | RAM %sMB (%sMB free), swap %sMB",
+                 sys.version.split()[0], mem.get("MemTotal", "?"),
+                 mem.get("MemAvailable", "?"), mem.get("SwapTotal", "?"))
+
+        try:
+            with stage("check_database") as d:
+                self.refresh_settings()
+                d["symbols"] = len(self._symbols)
+                d["mode"] = self._mode
+            log.info("  database OK - %d tradable symbol(s), hours mode '%s'",
+                     len(self._symbols), self._mode)
+        except Exception as exc:  # noqa: BLE001
+            log.error("  database FAILED: %s", exc)
+            return 1
+
+        try:
+            sample = self._symbols[:3] or ["AAPL"]
+            with stage("check_feed") as d:
+                quotes, _, _ = fetch_intraday(sample, 3, {}, {}, 5, 2)
+                d["priced"] = len(quotes)
+            if quotes:
+                log.info("  price feed OK - %s",
+                         ", ".join(f"{q['symbol']} {q['price']}" for q in quotes))
+            else:
+                log.error("  price feed returned nothing for %s", sample)
+                ok = False
+        except Exception as exc:  # noqa: BLE001
+            log.error("  price feed FAILED: %s", exc)
+            ok = False
+
+        log.info("pre-flight %s", "PASSED" if ok else "FAILED")
+        _shipper.flush()
+        self.db.close()
+        return 0 if ok else 1
+
     # ------------------------------------------------------------------- loop
     def tick(self) -> bool:
         """One full cycle. Returns True if it was a live-market cycle."""
@@ -332,10 +412,14 @@ class Worker:
         # Refresh official closes on startup and every 6 hours, so the
         # day-change figures are measured from the real 4pm close.
         if time.monotonic() - self.last_closes_run > 21_600 or not self.prev_closes:
-            self.refresh_prev_closes(symbols)
+            with stage("prev_closes", self.cycle, ship=True) as d:
+                self.refresh_prev_closes(symbols)
+                d["cached"] = len(self.prev_closes)
             self.last_closes_run = time.monotonic()
 
-        pushed, new_bars = self.push_market_data(symbols)
+        with stage("market_data", self.cycle, symbols=len(symbols)) as d:
+            pushed, new_bars = self.push_market_data(symbols)
+            d["quotes"], d["bars"] = pushed, new_bars
         self.heartbeat()
 
         matched = self.run_matching() if pushed else None
@@ -345,40 +429,95 @@ class Worker:
         # Equity snapshots: every 5 minutes while the market is live, so the
         # ranking curve has resolution without bloating the table.
         if time.monotonic() - self.last_snapshot > 300:
-            self.snapshot()
+            with stage("snapshot", self.cycle):
+                self.snapshot()
             self.last_snapshot = time.monotonic()
 
         # Long chart ranges only; the 1m series rides the quote download.
+        # The 30-minute history refresh is the worker's largest transient
+        # allocation, so it is always shipped with its duration and memory --
+        # this is the stage to look at first when the box gets into trouble.
         if time.monotonic() - self.last_history_run > self.cfg.history_interval:
-            count = self.refresh_history(symbols)
+            with stage("history", self.cycle, ship=True) as d:
+                d["rows"] = self.refresh_history(symbols)
+                d["seeded"] = sorted(self.history_seeded)
             self.last_history_run = time.monotonic()
-            log.info("history refresh wrote %d rows", count)
 
         if time.monotonic() - self.last_profile_run > 600:
-            enriched = self.enrich_profiles()
+            with stage("profiles", self.cycle) as d:
+                d["enriched"] = self.enrich_profiles()
             self.last_profile_run = time.monotonic()
-            if enriched:
-                log.info("enriched %d instrument profile(s)", enriched)
+
+        # Keep worker_logs to its 48h window. Hourly, and failure is not fatal.
+        if time.monotonic() - self.last_prune > 3_600:
+            self.last_prune = time.monotonic()
+            try:
+                removed = self.db.rpc("prune_worker_logs", {"p_hours": 48})
+                if removed:
+                    log.info("pruned %s expired log row(s)", removed,
+                             extra={"event": "logprune", "detail": {"removed": removed}})
+            except PostgrestError as exc:
+                log.warning("prune_worker_logs failed: %s", exc)
 
         fills = (matched or {}).get("filled") if isinstance(matched, dict) else None
+        elapsed = time.monotonic() - started
+        mem = mem_snapshot()
+        rss = rss_mb()
+
         log.info(
-            "cycle %d | %s%s | %d quotes | %d new bars | %s | %.2fs",
+            "cycle %d | %s%s | %d quotes | %d new bars | %s | %.2fs | rss %sMB, avail %sMB",
             self.cycle,
             state,
             "" if live else f" (idle, mode={self._mode})",
             pushed,
             new_bars,
             f"{fills} fill(s)" if fills else "no fills",
-            time.monotonic() - started,
+            elapsed,
+            rss if rss is not None else "?",
+            mem.get("MemAvailable", "?"),
+            extra={
+                "event": "cycle", "cycle": self.cycle,
+                "duration_ms": int(elapsed * 1000), "rss_mb": rss, "ship": True,
+                "detail": {
+                    "session": state, "mode": self._mode, "live": live,
+                    "quotes": pushed, "bars": new_bars, "fills": fills or 0,
+                    "mem_available_mb": mem.get("MemAvailable"),
+                    "swap_free_mb": mem.get("SwapFree"),
+                },
+            },
         )
+        # One flush per cycle: the table stays current without a request per line.
+        _shipper.flush()
         return live
 
     def run(self) -> None:
-        log.info("Xavage worker starting - %s", self.cfg.supabase_url)
+        mem = mem_snapshot()
         log.info(
-            "cadence: %ss live / %ss idle | history refresh every %ss",
-            self.cfg.poll_interval, self.cfg.idle_interval, self.cfg.history_interval,
+            "worker starting | %d symbols max | cadence %ss live / %ss idle | "
+            "history every %ss | RAM %sMB (%sMB free), swap %sMB | logfile %s",
+            self.cfg.max_symbols, self.cfg.poll_interval, self.cfg.idle_interval,
+            self.cfg.history_interval, mem.get("MemTotal", "?"),
+            mem.get("MemAvailable", "?"), mem.get("SwapTotal", "?"), _LOG_FILE or "none",
+            extra={"event": "startup", "ship": True, "rss_mb": rss_mb(), "detail": {
+                "poll_interval": self.cfg.poll_interval,
+                "idle_interval": self.cfg.idle_interval,
+                "history_interval": self.cfg.history_interval,
+                "batch_size": self.cfg.batch_size,
+                "download_threads": self.cfg.download_threads,
+                "mem_total_mb": mem.get("MemTotal"),
+                "mem_available_mb": mem.get("MemAvailable"),
+                "swap_total_mb": mem.get("SwapTotal"),
+                "log_file": _LOG_FILE,
+            }},
         )
+        # A box this small is the usual cause of trouble, so say so up front
+        # rather than leaving it to be inferred from a later crash.
+        if mem.get("MemTotal") and mem["MemTotal"] < 900:
+            log.warning(
+                "only %dMB of RAM visible - check for a kdump crashkernel "
+                "reservation (`cat /sys/kernel/kexec_crash_size`)", mem["MemTotal"],
+                extra={"event": "startup", "detail": mem},
+            )
 
         while _running:
             started = time.monotonic()
@@ -395,8 +534,11 @@ class Worker:
             while _running and time.monotonic() < deadline:
                 time.sleep(min(0.5, deadline - time.monotonic()))
 
+        log.info("worker stopping after %d cycle(s)", self.cycle,
+                 extra={"event": "shutdown", "cycle": self.cycle, "ship": True,
+                        "rss_mb": rss_mb()})
+        _shipper.flush()          # get the last lines out before the socket goes
         self.db.close()
-        log.info("worker stopped after %d cycles", self.cycle)
 
 
 def main() -> int:
@@ -407,8 +549,16 @@ def main() -> int:
     log.info("exchange clock: %s (%s)", now_ny().strftime("%Y-%m-%d %H:%M:%S"), session_state())
 
     worker = Worker(cfg)
-    # `--once` runs a single cycle and exits, which is what the installer uses
-    # to prove the config and the network path before enabling the service.
+    # `--check` proves the interpreter, dependency tree, credentials and egress
+    # path in about ten seconds. This is what the installer runs: `--once` does
+    # a FULL cycle, and on a cold start that means the ~160k-row backfill, so
+    # using it as a smoke test blocked setup for ten silent minutes before the
+    # service was even installed.
+    if "--check" in sys.argv:
+        return worker.check()
+
+    # `--once` runs a single complete cycle and exits. Useful for testing a
+    # change by hand; not for proving an install.
     if "--once" in sys.argv:
         worker.tick()
         worker.db.close()

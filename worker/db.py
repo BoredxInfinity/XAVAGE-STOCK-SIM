@@ -176,6 +176,21 @@ class Postgrest:
                 total = int(tail)
         return rows, total
 
+    def insert(self, table: str, rows: list[dict], label: str | None = None) -> None:
+        """Plain append, no conflict handling. For log-style tables."""
+        if not rows:
+            return
+        body = json.dumps(rows, separators=(",", ":")).encode()
+        self.request(
+            "POST", f"{self.base}/{table}",
+            body=body,
+            extra={"Prefer": "return=minimal"},
+            label=label or f"insert {table}",
+            # Log lines are not worth a long retry storm; if the first two
+            # attempts fail the batch is dropped and the worker moves on.
+            attempts=2,
+        )
+
     def upsert(self, table: str, rows: list[dict], on_conflict: str, label: str | None = None) -> None:
         if not rows:
             return

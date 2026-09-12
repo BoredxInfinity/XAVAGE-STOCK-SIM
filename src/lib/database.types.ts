@@ -196,6 +196,24 @@ export type IssuedCredential = {
   issued_by: string | null;
 };
 
+export type WorkerLogLevel = "DEBUG" | "INFO" | "WARNING" | "ERROR" | "CRITICAL";
+
+/** One line from the price worker. See migration 0012 and worker/logbook.py. */
+export type WorkerLog = {
+  id: number;
+  ts: string;
+  level: WorkerLogLevel;
+  /** Machine-readable stage name: cycle, history, backfill, startup, ... */
+  event: string;
+  message: string;
+  cycle: number | null;
+  duration_ms: number | null;
+  /** Worker resident memory when the line was written. */
+  rss_mb: number | null;
+  detail: Record<string, unknown> | null;
+  source: string;
+};
+
 export type Announcement = {
   id: string;
   title: string;
@@ -325,6 +343,7 @@ export type Database = {
         id: boolean; last_tick_at: string | null; last_tick_source: string | null;
         tick_count: number; last_accrual_date: string | null; last_snapshot_at: string | null;
       }>;
+      worker_logs: Row<WorkerLog>;
     };
     Views: { [_ in never]: never };
     Functions: {

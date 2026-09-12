@@ -11,6 +11,7 @@ import { Panel } from "@/components/ui/panel";
 import { StatTile } from "@/components/ui/stat-tile";
 import { createClient } from "@/lib/supabase/client";
 import { useAnnouncements, useLeaderboard, useMarketStatus } from "@/hooks/use-app-data";
+import { WorkerLogsPanel } from "@/components/admin/worker-logs-panel";
 import { cn, money, pct, relative, stamp } from "@/lib/format";
 
 export function OverviewView() {
@@ -224,6 +225,10 @@ export function OverviewView() {
           </div>
         </Panel>
       </div>
+
+      {/* What the price worker is actually doing. Its own journal lives on a
+          box nobody watches, so this is the only view an organiser gets. */}
+      <WorkerLogsPanel />
     </div>
   );
 }
