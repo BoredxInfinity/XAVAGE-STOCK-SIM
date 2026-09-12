@@ -5,6 +5,7 @@ import Link from "next/link";
 import { AlertTriangle, Radio } from "lucide-react";
 import { useMarketStatus } from "@/hooks/use-app-data";
 import { useQuotesVersion } from "@/hooks/use-quote";
+import { useNow } from "@/hooks/use-now";
 import { quoteStore } from "@/lib/quote-store";
 import { cn, num, pct, relative } from "@/lib/format";
 
@@ -14,6 +15,7 @@ const PINNED = ["SPY", "QQQ", "DIA", "IWM", "AAPL", "MSFT", "NVDA", "TSLA", "AMZ
 export function MarketBar() {
   const { data: status } = useMarketStatus();
   const version = useQuotesVersion();
+  const now = useNow();
 
   const tape = useMemo(() => {
     const all = quoteStore.getAll();
@@ -47,7 +49,7 @@ export function MarketBar() {
             </span>
           )}
           <span className="hidden lg:inline text-[11px] text-[var(--color-text-faint)] num">
-            {status?.last_tick_at ? `tick ${relative(status.last_tick_at)}` : "awaiting feed"}
+            {status?.last_tick_at ? `tick ${relative(status.last_tick_at, now)}` : "awaiting feed"}
           </span>
         </div>
 

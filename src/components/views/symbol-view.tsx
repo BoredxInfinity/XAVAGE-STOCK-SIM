@@ -7,6 +7,7 @@ import { OrderTicket } from "@/components/trade/order-ticket";
 import { OrdersTable } from "@/components/tables/orders-table";
 import { useOrders, usePortfolio } from "@/hooks/use-app-data";
 import { useQuote } from "@/hooks/use-quote";
+import { useNow } from "@/hooks/use-now";
 import { cn, money, num, pct, qtyText, relative, signedMoney, toneClass } from "@/lib/format";
 
 interface Instrument {
@@ -24,6 +25,9 @@ interface Instrument {
 export function SymbolView({ instrument }: { instrument: Instrument }) {
   const { symbol } = instrument;
   const quote = useQuote(symbol);
+  // Someone watching one ticker is watching this line as much as the price:
+  // a frozen "updated 9s ago" is how a live page looks broken.
+  const now = useNow();
   const { data: portfolio } = usePortfolio();
   const { data: orders = [] } = useOrders({ limit: 100 });
 
@@ -82,7 +86,7 @@ export function SymbolView({ instrument }: { instrument: Instrument }) {
               {change >= 0 ? "+" : "−"}{num(Math.abs(change))} ({pct(changePct)})
             </p>
             <p className="text-[10.5px] text-[var(--color-text-faint)] mt-0.5">
-              {quote ? `updated ${relative(quote.quote_time)}` : "awaiting feed"}
+              {quote ? `updated ${relative(quote.quote_time, now)}` : "awaiting feed"}
             </p>
           </div>
         </div>

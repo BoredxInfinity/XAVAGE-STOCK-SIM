@@ -6,6 +6,8 @@ import {
   createChart, type IChartApi, type ISeriesApi, type UTCTimestamp,
 } from "lightweight-charts";
 import { Loader2 } from "lucide-react";
+import { useNow } from "@/hooks/use-now";
+import { nextWorkingBar, sameBar, type Bar } from "@/lib/working-bar";
 import { cn } from "@/lib/format";
 
 const RANGES = ["1D", "5D", "1M"] as const;
@@ -25,10 +27,6 @@ const RANGE_SPEC: Record<Range, { stepSec: number; refetchMs: number }> = {
   "1M": { stepSec: 86_400, refetchMs: 300_000 },
 };
 
-interface Bar {
-  time: number; open: number; high: number; low: number; close: number; volume: number;
-}
-
 export function PriceChart({
   symbol, livePrice, height = 380,
 }: { symbol: string; livePrice?: number; height?: number }) {
@@ -40,6 +38,13 @@ export function PriceChart({
   const [range, setRange] = useState<Range>("1D");
   // Which range the bars currently in state were fetched for.
   const barsRange = useRef<Range | null>(null);
+  // Whether the viewer has taken hold of the time scale themselves. Until they
+  // do, every refresh re-frames the chart so the whole range stays in view as
+  // it grows. Once they have panned or zoomed it is their view, and re-fitting
+  // under them every 30 seconds -- while they are looking at it -- is not on.
+  // Hovering for the crosshair is a mousemove, so reading values off the chart
+  // does not count as taking hold of it.
+  const userMoved = useRef(false);
   const [mode, setMode] = useState<"area" | "candles">("area");
   const [bars, setBars] = useState<Bar[]>([]);
   const [loading, setLoading] = useState(true);
@@ -82,7 +87,16 @@ export function PriceChart({
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     volRef.current = volume;
 
+    const el = holder.current;
+    const claim = () => { userMoved.current = true; };
+    el.addEventListener("mousedown", claim);
+    el.addEventListener("wheel", claim, { passive: true });
+    el.addEventListener("touchstart", claim, { passive: true });
+
     return () => {
+      el.removeEventListener("mousedown", claim);
+      el.removeEventListener("wheel", claim);
+      el.removeEventListener("touchstart", claim);
       chart.remove();
       chartRef.current = null;
       mainRef.current = null;
@@ -125,8 +139,10 @@ export function PriceChart({
     const series = mainRef.current;
     if (!series) return;
 
-    // setData resets the series, so this is the new floor for update().
+    // setData resets the series, so this is the new floor for update()...
     lastWritten.current = list.length ? list[list.length - 1].time : null;
+    // ...and the synthetic bar is no longer on it, whatever `working` still says.
+    plotted.current = null;
 
     if (mode === "candles") {
       (series as ISeriesApi<"Candlestick">).setData(
@@ -149,7 +165,7 @@ export function PriceChart({
       })),
     );
 
-    chartRef.current?.timeScale().fitContent();
+    if (!userMoved.current) chartRef.current?.timeScale().fitContent();
   }
 
   /* ---- load bars, and keep loading them ---- */
@@ -189,8 +205,23 @@ export function PriceChart({
   // The newest time actually written to the series -- which includes the
   // synthetic working bar, and so can be AHEAD of the newest bar in `bars`.
   const lastWritten = useRef<number | null>(null);
+  // Exactly what was last pushed through update(), so an unchanged bar can be
+  // skipped rather than redrawn once a second. Cleared by applyBars, because
+  // setData wipes the synthetic bar off the series and it has to be re-drawn
+  // even though nothing about it changed.
+  const plotted = useRef<Bar | null>(null);
 
-  useEffect(() => { working.current = null; }, [symbol, range]);
+  useEffect(() => {
+    working.current = null;
+    plotted.current = null;
+    userMoved.current = false;
+  }, [symbol, range]);
+
+  // The clock is a real input here, not just a repaint trigger. A price that
+  // holds steady still has to roll into the next bar when its bucket closes --
+  // otherwise a quiet symbol looks like a chart that stopped, and the right
+  // edge sits where it was when the last trade happened to print.
+  const now = useNow();
 
   useEffect(() => {
     if (!livePrice || bars.length === 0 || !mainRef.current) return;
@@ -200,34 +231,21 @@ export function PriceChart({
     // and bucketing those to a 5-minute step lands BEHIND what is on screen.
     if (barsRange.current !== range) return;
 
-    const { stepSec } = RANGE_SPEC[range];
-    const last = bars[bars.length - 1];
-    const bucket = Math.floor(Date.now() / 1000 / stepSec) * stepSec;
+    const bar = nextWorkingBar({
+      bar: working.current,
+      last: bars[bars.length - 1],
+      price: livePrice,
+      nowMs: now,
+      stepSec: RANGE_SPEC[range].stepSec,
+      floor: lastWritten.current,
+    });
+    if (!bar) return;
 
-    // Never draw behind the history we were given: if the server's newest bar
-    // is ahead of our bucket (clock skew, a slow refresh), sit on that one.
-    const time = Math.max(bucket, last.time);
-
-    // ...and never behind what is already plotted. lightweight-charts throws
-    // "Cannot update oldest data" on a backwards update, which takes the whole
-    // page down rather than dropping one tick.
-    if (lastWritten.current !== null && time < lastWritten.current) return;
-
-    let bar = working.current;
-    if (!bar || bar.time !== time) {
-      const open = time === last.time ? last.open : livePrice;
-      bar = {
-        time,
-        open,
-        high: time === last.time ? Math.max(last.high, livePrice) : livePrice,
-        low: time === last.time ? Math.min(last.low, livePrice) : livePrice,
-        close: livePrice,
-        volume: time === last.time ? last.volume : 0,
-      };
-    } else {
-      bar = { ...bar, high: Math.max(bar.high, livePrice), low: Math.min(bar.low, livePrice), close: livePrice };
-    }
     working.current = bar;
+
+    // Nothing to draw: same bucket, same numbers. Without this the clock would
+    // repaint the series once a second for no visible change.
+    if (sameBar(plotted.current, bar)) return;
 
     if (mode === "candles") {
       (mainRef.current as ISeriesApi<"Candlestick">).update({
@@ -239,8 +257,9 @@ export function PriceChart({
         time: bar.time as UTCTimestamp, value: bar.close,
       });
     }
+    plotted.current = bar;
     lastWritten.current = bar.time;
-  }, [livePrice, bars, mode, range]);
+  }, [livePrice, bars, mode, range, now]);
 
   return (
     <div className="flex flex-col">

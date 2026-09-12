@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ChevronDown, ChevronRight, ScrollText } from "lucide-react";
 import { Panel } from "@/components/ui/panel";
 import { createClient } from "@/lib/supabase/client";
+import { useNow } from "@/hooks/use-now";
 import { cn, relative } from "@/lib/format";
 import type { WorkerLog, WorkerLogLevel } from "@/lib/database.types";
 
@@ -32,6 +33,7 @@ function duration(ms: number | null) {
 export function WorkerLogsPanel() {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["key"]>("all");
   const [open, setOpen] = useState<number | null>(null);
+  const now = useNow();
 
   const { data: logs = [], isLoading } = useQuery<WorkerLog[]>({
     queryKey: ["worker-logs", filter],
@@ -163,7 +165,7 @@ export function WorkerLogsPanel() {
       {logs.length > 0 && (
         <p className="px-3 py-2 text-[10px] text-[var(--color-text-faint)] border-t border-[var(--color-border-soft)]">
           Newest first · kept 48 hours · every cycle plus anything slow, memory-hungry or failed.
-          {logs[0] && ` Last entry ${relative(logs[0].ts)}.`}
+          {logs[0] && ` Last entry ${relative(logs[0].ts, now)}.`}
         </p>
       )}
     </Panel>

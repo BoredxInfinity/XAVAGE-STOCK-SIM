@@ -11,6 +11,7 @@ import { Panel } from "@/components/ui/panel";
 import { StatTile } from "@/components/ui/stat-tile";
 import { createClient } from "@/lib/supabase/client";
 import { useAnnouncements, useLeaderboard, useMarketStatus } from "@/hooks/use-app-data";
+import { useNow } from "@/hooks/use-now";
 import { WorkerLogsPanel } from "@/components/admin/worker-logs-panel";
 import { cn, money, pct, relative, stamp } from "@/lib/format";
 
@@ -19,6 +20,12 @@ export function OverviewView() {
   const { data: status } = useMarketStatus();
   const { data: teams = [] } = useLeaderboard();
   const { data: news = [] } = useAnnouncements();
+  // The health strip has to age between polls. Recomputing the tick age only
+  // when the 15s query returns means a dead feed can read "healthy" for a
+  // quarter of a minute after it stopped, and the age jumps in 15s steps
+  // rather than counting -- which is the difference between a status line an
+  // organiser trusts and one they reload to check.
+  const now = useNow();
 
   const [draft, setDraft] = useState({ title: "", body: "", severity: "info" });
   const [posting, setPosting] = useState(false);
@@ -45,7 +52,7 @@ export function OverviewView() {
   });
 
   const lastTick = health?.state?.last_tick_at ?? status?.last_tick_at ?? null;
-  const tickAgeSec = lastTick ? (Date.now() - new Date(lastTick).getTime()) / 1000 : null;
+  const tickAgeSec = lastTick ? (now - new Date(lastTick).getTime()) / 1000 : null;
   const feedHealthy = tickAgeSec != null && tickAgeSec < 120;
 
   async function post(e: React.FormEvent) {
@@ -99,7 +106,7 @@ export function OverviewView() {
               {feedHealthy ? "Price feed healthy" : "Price feed stale"}
             </p>
             <p className="text-[11px] text-[var(--color-text-faint)]">
-              {lastTick ? `last tick ${relative(lastTick)}` : "no tick recorded yet"}
+              {lastTick ? `last tick ${relative(lastTick, now)}` : "no tick recorded yet"}
               {health?.state?.last_tick_source ? ` · ${health.state.last_tick_source}` : ""}
             </p>
           </div>

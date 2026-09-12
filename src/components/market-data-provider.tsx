@@ -127,9 +127,20 @@ export function MarketDataProvider({ children }: { children: React.ReactNode }) 
     // rather than the thing actually delivering prices.
     const poll = setInterval(seed, USE_BROADCAST ? 60_000 : 20_000);
 
+    // A hidden tab has its timers throttled to about once a minute and may
+    // have missed broadcasts while the socket was re-establishing, so the poll
+    // above is not enough on its own: someone coming back to the tab would be
+    // looking at whatever the prices were when they left, for up to a minute,
+    // with no way to tell. Re-sync the moment the page is looked at again.
+    function onVisibility() {
+      if (document.visibilityState === "visible") seed();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+
     return () => {
       cancelled = true;
       clearInterval(poll);
+      document.removeEventListener("visibilitychange", onVisibility);
       supabase.removeChannel(priceChannel);
       supabase.removeChannel(bookChannel);
     };

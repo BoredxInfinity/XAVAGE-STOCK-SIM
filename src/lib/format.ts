@@ -66,9 +66,13 @@ export function stamp(iso: string | null | undefined) {
   return dateTime.format(new Date(iso));
 }
 
-export function relative(iso: string | null | undefined) {
+/**
+ * Pass `now` (from `useNow()`) to make the string tick along on its own.
+ * Without it this is a one-shot reading that freezes until the next render.
+ */
+export function relative(iso: string | null | undefined, now?: number) {
   if (!iso) return "—";
-  const secs = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  const secs = Math.round(((now ?? Date.now()) - new Date(iso).getTime()) / 1000);
   if (secs < 5) return "just now";
   if (secs < 60) return `${secs}s ago`;
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
