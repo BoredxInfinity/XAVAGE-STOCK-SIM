@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { AreaSeries, ColorType, createChart, type UTCTimestamp } from "lightweight-charts";
+import { istCrosshair, istTickMark } from "@/lib/chart-time";
 
 interface Point { ts: string; equity: number }
 
@@ -27,7 +28,11 @@ export function EquityChart({
         horzLines: { color: "rgba(35,35,61,.4)" },
       },
       rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.15, bottom: 0.08 } },
-      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
+      localization: { timeFormatter: istCrosshair },
+      timeScale: {
+        borderVisible: false, timeVisible: true, secondsVisible: false,
+        tickMarkFormatter: istTickMark,
+      },
       crosshair: { mode: 1 },
       autoSize: true,
       handleScroll: false,

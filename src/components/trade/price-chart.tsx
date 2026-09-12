@@ -8,6 +8,7 @@ import {
 import { Loader2 } from "lucide-react";
 import { useNow } from "@/hooks/use-now";
 import { nextWorkingBar, sameBar, type Bar } from "@/lib/working-bar";
+import { istCrosshair, istTickMark } from "@/lib/chart-time";
 import { cn } from "@/lib/format";
 
 const RANGES = ["1D", "5D", "1M"] as const;
@@ -67,7 +68,11 @@ export function PriceChart({
         horzLines: { color: "rgba(35,35,61,.45)" },
       },
       rightPriceScale: { borderColor: "#23233d", scaleMargins: { top: 0.12, bottom: 0.28 } },
-      timeScale: { borderColor: "#23233d", timeVisible: true, secondsVisible: false },
+      localization: { timeFormatter: istCrosshair },
+      timeScale: {
+        borderColor: "#23233d", timeVisible: true, secondsVisible: false,
+        tickMarkFormatter: istTickMark,
+      },
       crosshair: {
         mode: 1,
         vertLine: { color: "#4d8dff", width: 1, style: 2, labelBackgroundColor: "#1e5cf0" },

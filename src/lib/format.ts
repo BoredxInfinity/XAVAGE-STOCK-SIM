@@ -53,6 +53,16 @@ export function toneClass(value: number | null | undefined) {
   return t === "up" ? "text-[var(--color-up)]" : t === "down" ? "text-[var(--color-down)]" : "text-[var(--color-text-dim)]";
 }
 
+/**
+ * The competition's clock.
+ *
+ * Everyone playing is in one place, and the chart axis would otherwise be
+ * labelled in UTC (lightweight-charts' default) while the blotter beside it
+ * used whatever the laptop was set to. Two different clocks describing the
+ * same fill is how people mis-read a chart. Pin the display to one.
+ */
+export const DISPLAY_TZ = "Asia/Kolkata";
+
 const time = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 const dateTime = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 
