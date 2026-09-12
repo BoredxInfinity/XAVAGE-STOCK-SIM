@@ -213,6 +213,26 @@ class Postgrest:
             label=label or f"update {table}",
         )
 
+    def broadcast(self, topic: str, event: str, payload: dict, label: str | None = None) -> None:
+        """Send one Realtime Broadcast message over the HTTP API.
+
+        Deliberately not the websocket protocol: this worker already holds a
+        keep-alive HTTP connection to the same host, so a POST costs nothing
+        extra and needs no client library, no persistent socket to babysit and
+        no reconnect logic on a box with 945 MB of RAM.
+        """
+        body = json.dumps(
+            {"messages": [{"topic": topic, "event": event, "payload": payload}]},
+            separators=(",", ":"),
+        ).encode()
+        self.request(
+            "POST", "/realtime/v1/api/broadcast", body=body,
+            label=label or f"broadcast {topic}",
+            # Prices are superseded a few seconds later, so a missed tick is
+            # not worth a retry storm -- the next cycle carries the truth.
+            attempts=2,
+        )
+
     def rpc(self, fn: str, args: dict | None = None, label: str | None = None):
         body = json.dumps(args or {}, separators=(",", ":")).encode()
         raw, _ = self.request("POST", f"{self.base}/rpc/{fn}", body=body, label=label or f"rpc {fn}")

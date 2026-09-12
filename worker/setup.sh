@@ -228,7 +228,10 @@ WorkingDirectory=$WORKER_DIR
 ExecStart=$PY_EXEC -u poller.py
 Restart=always
 RestartSec=10
-TimeoutStopSec=30
+# Longer than a worst-case cycle. A cold start writes ~160k rows and can take
+# several minutes; at 30s systemd was SIGKILLing the worker mid-backfill on
+# every restart, which loses the final log flush and the clean socket close.
+TimeoutStopSec=180
 # A process killed by the kernel OOM killer should bring the service back,
 # not park the unit. Pairs with StartLimitIntervalSec=0 above.
 OOMPolicy=continue

@@ -113,6 +113,9 @@ class Worker:
         # Newest bar already written per (symbol, interval), so each cycle
         # sends the handful that are new instead of the whole series.
         self.marks: dict[tuple[str, str], object] = {}
+        # Last values broadcast per symbol, so a tick only carries what moved.
+        self.last_sent: dict[str, tuple] = {}
+        self.sent_last_cycle = 0
         # Official previous closes, refreshed from daily bars a few times a day
         self.prev_closes: dict[str, float] = {}
         # Intervals whose deep history has been seeded once, so later refreshes
@@ -205,11 +208,47 @@ class Worker:
 
         # on_conflict=symbol -> one round trip for the whole universe
         self.db.upsert("quotes", quotes, "symbol", label="quotes upsert")
+        self.sent_last_cycle = self.broadcast_quotes(quotes)
 
         written, failed = self.write_bars(bars)
         if not failed:
             self.marks.update(marks)
         return len(quotes), written
+
+    def broadcast_quotes(self, quotes: list[dict]) -> int:
+        """Push the moved symbols to subscribed clients in ONE message.
+
+        The database write above is still the source of truth; this is only
+        delivery. So a dropped tick costs nothing -- the next cycle carries
+        the current price, and clients reconcile against `quotes` anyway.
+        """
+        if not self.cfg.broadcast_quotes:
+            return 0
+
+        moved = []
+        for q in quotes:
+            # quote_time changes every cycle whether or not anything happened,
+            # so compare the values a client would actually render.
+            fingerprint = (q["price"], q["day_high"], q["day_low"],
+                           q["volume"], q["market_state"])
+            if self.last_sent.get(q["symbol"]) != fingerprint:
+                moved.append(q)
+                self.last_sent[q["symbol"]] = fingerprint
+
+        if not moved:
+            return 0
+
+        try:
+            self.db.broadcast(self.cfg.broadcast_topic, "tick", {"quotes": moved})
+        except PostgrestError as exc:
+            # Never let delivery failure affect the cycle. Clients still have
+            # their reconcile poll, and the row is already committed.
+            log.warning("price broadcast failed (%d symbol(s)): %s", len(moved), exc,
+                        extra={"event": "broadcast", "cycle": self.cycle})
+            for q in moved:                      # resend next cycle
+                self.last_sent.pop(q["symbol"], None)
+            return 0
+        return len(moved)
 
     def write_bars(self, bars: list[dict]) -> tuple[int, int]:
         """
@@ -239,6 +278,14 @@ class Worker:
                             "detail": {"rows": len(bars), "chunks": total}, "ship": True})
 
         for n, i in enumerate(range(0, len(bars), chunk), start=1):
+            # A backfill is minutes long, so honour a shutdown request here
+            # rather than making systemd wait it out. The marks are held back
+            # on an incomplete write, so the next start resumes cleanly.
+            if not _running:
+                log.info("shutdown requested - stopping backfill at chunk %d/%d", n, total,
+                         extra={"event": "backfill", "cycle": self.cycle, "ship": True})
+                failed += 1          # keeps the high-water marks from advancing
+                break
             batch = bars[i : i + chunk]
             try:
                 self.db.upsert("price_bars", batch, "symbol,interval,ts",
@@ -420,6 +467,7 @@ class Worker:
         with stage("market_data", self.cycle, symbols=len(symbols)) as d:
             pushed, new_bars = self.push_market_data(symbols)
             d["quotes"], d["bars"] = pushed, new_bars
+            d["broadcast"] = self.sent_last_cycle
         self.heartbeat()
 
         matched = self.run_matching() if pushed else None

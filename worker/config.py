@@ -36,6 +36,13 @@ def load_env(path: Path = ENV_FILE) -> None:
             os.environ[key] = value
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
 def _int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, default))
@@ -54,6 +61,8 @@ class Config:
     max_symbols: int
     bars_per_symbol: int
     download_threads: int
+    broadcast_quotes: bool
+    broadcast_topic: str
 
     @classmethod
     def load(cls) -> "Config":
@@ -109,4 +118,10 @@ class Config:
             # 4 threads 4.2s, 8 threads 3.7s, 24 threads 3.5s -- past 8 the
             # gain is noise and the extra in-flight responses just cost RAM.
             download_threads=_int("DOWNLOAD_THREADS", 8),
+            # The fallback switch. Set BROADCAST_QUOTES=0 and the worker stops
+            # publishing; clients fall back to Postgres Changes, which is what
+            # they used before and still works. Flip it without a code change
+            # if Broadcast misbehaves mid-competition.
+            broadcast_quotes=_bool("BROADCAST_QUOTES", True),
+            broadcast_topic=os.environ.get("BROADCAST_TOPIC", "xavage:prices").strip(),
         )
