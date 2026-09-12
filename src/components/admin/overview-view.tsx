@@ -13,8 +13,17 @@ import { createClient } from "@/lib/supabase/client";
 import { useAnnouncements, useLeaderboard, useMarketStatus } from "@/hooks/use-app-data";
 import { useNow } from "@/hooks/use-now";
 import { WorkerLogsPanel } from "@/components/admin/worker-logs-panel";
+import { WorkerModeSwitch } from "@/components/admin/worker-mode-switch";
 import { WorkerTimingChart } from "@/components/admin/worker-timing-chart";
 import { cn, money, pct, relative, stamp } from "@/lib/format";
+import type { MarketState } from "@/lib/database.types";
+
+const SESSION_LABEL: Record<MarketState, string> = {
+  regular: "Market open",
+  pre: "Pre-market",
+  post: "After hours",
+  closed: "Market closed",
+};
 
 export function OverviewView() {
   const qc = useQueryClient();
@@ -52,6 +61,7 @@ export function OverviewView() {
     },
   });
 
+  const state: MarketState = status?.market_state ?? "closed";
   const lastTick = health?.state?.last_tick_at ?? status?.last_tick_at ?? null;
   const tickAgeSec = lastTick ? (now - new Date(lastTick).getTime()) / 1000 : null;
   const feedHealthy = tickAgeSec != null && tickAgeSec < 120;
@@ -113,17 +123,22 @@ export function OverviewView() {
           </div>
         </div>
 
+        {/* The exchange's session, in the same four states participants see. */}
         <div className="flex items-center gap-2">
-          <Radio size={16} className={cn(status?.is_open ? "text-[var(--color-up)] live-dot" : "text-[var(--color-text-faint)]")} />
+          <Radio size={16} className={cn(
+            state === "regular" ? "text-[var(--color-up)] live-dot"
+              : state === "pre" || state === "post" ? "text-[var(--color-warn)] live-dot"
+              : "text-[var(--color-down)]",
+          )} />
           <div>
-            <p className="text-xs font-semibold">
-              {status?.is_open ? "Market open" : "Market closed"}
-            </p>
+            <p className="text-xs font-semibold">{SESSION_LABEL[state]}</p>
             <p className="text-[11px] text-[var(--color-text-faint)]">
-              {status?.market_state} · {status?.hours_mode}
+              {status?.is_open ? "book open" : "book closed"} · {state}
             </p>
           </div>
         </div>
+
+        <WorkerModeSwitch />
 
         <div className="flex items-center gap-2">
           <Activity size={16} className={status?.trading_enabled ? "text-[var(--color-up)]" : "text-[var(--color-down)]"} />

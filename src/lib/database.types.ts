@@ -17,6 +17,13 @@ export type OrderStatus =
   | "pending" | "open" | "partially_filled" | "filled"
   | "cancelled" | "rejected" | "expired";
 export type MarketState = "pre" | "regular" | "post" | "closed";
+
+/**
+ * What the price worker is doing, derived from the exchange session:
+ * regular -> live (5s), pre/post -> regular (slow poll), closed -> idle (no
+ * feed requests at all). The book is open in any mode but idle.
+ */
+export type WorkerMode = "idle" | "regular" | "live";
 export type LedgerType =
   | "initial_capital" | "trade_buy" | "trade_sell" | "commission" | "cash_interest"
   | "margin_interest" | "borrow_fee" | "dividend" | "tax" | "admin_adjustment";
@@ -162,7 +169,8 @@ export type GameSettings = {
   max_order_notional: number | null;
   min_order_notional: number;
   allow_fractional_shares: boolean;
-  market_hours_mode: "regular" | "extended" | "always_open";
+  /** Testing lever only: force the worker outside regular hours. See WorkerMode. */
+  worker_mode_override: WorkerMode | null;
   price_staleness_seconds: number;
   competition_start_at: string | null;
   competition_end_at: string | null;
@@ -281,8 +289,14 @@ export type LeaderboardRow = {
 export type MarketStatus = {
   ok: true;
   market_state: MarketState;
+  /** True whenever the effective worker mode is not idle. */
   is_open: boolean;
-  hours_mode: string;
+  /** The mode in force right now, override included. */
+  worker_mode: WorkerMode;
+  /** What an organiser has forced, or null while following the exchange. */
+  worker_mode_override: WorkerMode | null;
+  /** True while the regular session is on, when the override is ignored. */
+  worker_mode_locked: boolean;
   trading_enabled: boolean;
   halt_reason: string | null;
   last_quote_at: string | null;

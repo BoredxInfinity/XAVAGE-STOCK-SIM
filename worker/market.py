@@ -84,3 +84,28 @@ def normalise_state(raw: str | None, moment: datetime | None = None) -> str:
 def just_closed(previous: str, current: str) -> bool:
     """True on the transition out of the regular session -- time to expire day orders."""
     return previous == "regular" and current != "regular"
+
+
+MODES = ("idle", "regular", "live")
+
+
+def mode_for(state: str, override: str | None) -> str:
+    """What the worker should be doing, given the session and any override.
+
+    The same three lines as private.session_mode() in the database, and it has
+    to stay that way: the engine decides whether the book is open from its copy
+    and the worker decides whether to fetch from this one. If they disagree,
+    orders fill against a feed that has stopped.
+
+        regular      -> live     5s, the whole pipeline
+        pre / post   -> regular  slow poll; thin but real trading
+        closed       -> idle     no feed requests at all
+
+    An override forces a mode outside the regular session, for rehearsing an
+    event without waiting for New York. It cannot touch an open market.
+    """
+    if state == "regular":
+        return "live"
+    if override in MODES:
+        return override
+    return "regular" if state in ("pre", "post") else "idle"

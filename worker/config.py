@@ -54,7 +54,8 @@ def _int(name: str, default: int) -> int:
 class Config:
     supabase_url: str
     service_role_key: str
-    poll_interval: int
+    live_interval: int
+    regular_interval: int
     idle_interval: int
     history_interval: int
     daily_interval: int
@@ -108,8 +109,15 @@ class Config:
         return cls(
             supabase_url=url,
             service_role_key=key,
-            poll_interval=_int("POLL_INTERVAL_SECONDS", 5),
-            idle_interval=_int("IDLE_INTERVAL_SECONDS", 120),
+            # One cadence per worker mode. `live` is the whole pipeline at
+            # the pace the competition is scored on; `regular` is pre/post,
+            # where prints are thin and a 5s poll would burn requests for the
+            # same number twenty times over; `idle` is a shut exchange, where
+            # the worker fetches nothing at all and this is only how often it
+            # says it is still alive.
+            live_interval=_int("POLL_INTERVAL_SECONDS", 5),
+            regular_interval=_int("REGULAR_INTERVAL_SECONDS", 120),
+            idle_interval=_int("IDLE_INTERVAL_SECONDS", 60),
             # The 5D chart's series, refreshed at one bar width. Faster buys
             # nothing: the client already carries the live price on the bar
             # currently forming, so this timer only governs how quickly a

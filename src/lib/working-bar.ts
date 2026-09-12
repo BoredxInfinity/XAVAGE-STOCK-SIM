@@ -42,7 +42,7 @@ export function nextWorkingBar({
   const bucket = Math.floor(nowMs / 1000 / stepSec) * stepSec;
 
   // Stop projecting once the history has stopped arriving. The game can be
-  // held open after the exchange has closed (market_hours_mode = always_open),
+  // held open after the exchange has closed (worker_mode_override = live),
   // and the last price stays tradable -- but Yahoo writes no bars over a
   // weekend, so the bucket at `now` can be hours or days past the newest real
   // one. The chart plots bars by index, not by time, so that candle lands

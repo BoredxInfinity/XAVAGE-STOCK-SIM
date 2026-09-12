@@ -41,7 +41,7 @@ from logbook import (  # noqa: E402
     SupabaseLogHandler, add_file_handler, mem_snapshot, rss_mb, stage,
 )
 from feed import fetch_bars_bulk, fetch_daily_closes, fetch_intraday, fetch_profile  # noqa: E402
-from market import just_closed, now_ny, session_state  # noqa: E402
+from market import just_closed, mode_for, now_ny, session_state  # noqa: E402
 
 # Route INFO/DEBUG to stdout and WARNING+ to stderr, so "error" in the log
 # viewer means something actually went wrong rather than "the worker is
@@ -111,7 +111,11 @@ class Worker:
         self.history_run: dict[str, float] = {}
         self.last_settings_run = 0.0
         self._symbols: list[str] = []
-        self._mode = "regular"
+        # An organiser's forced mode, or None while following the exchange.
+        self._override: str | None = None
+        # The mode the previous cycle ran in, so the transition into idle can
+        # close the book exactly once instead of on every idle cycle.
+        self.last_mode = "regular"
         # Newest bar already written per (symbol, interval), so each cycle
         # sends the handful that are new instead of the whole series.
         self.marks: dict[tuple[str, str], object] = {}
@@ -152,28 +156,37 @@ class Worker:
                 self.cfg.max_symbols, total, len(self._symbols),
             )
 
-        # The app decides what "open" means: an admin can widen the session to
-        # pre/post or force it always-open. Polling on the idle cadence while
-        # participants actively trade extended hours would look like a lagging
-        # feed, so the worker follows the same rule the engine does.
+        # The exchange clock decides the session; the only thing the app can
+        # say is whether an organiser is forcing a mode for a rehearsal. Read
+        # it every settings refresh so flipping the switch in the control room
+        # takes effect within the TTL rather than on the next deploy.
         try:
             settings, _ = self.db.select(
                 "game_settings",
-                {"select": "market_hours_mode", "id": "eq.true", "limit": 1},
+                {"select": "worker_mode_override", "id": "eq.true", "limit": 1},
                 label="game_settings",
             )
-            self._mode = (settings[0].get("market_hours_mode") if settings else None) or "regular"
+            self._override = (settings[0].get("worker_mode_override") if settings else None) or None
         except PostgrestError as exc:
-            log.warning("could not read market_hours_mode, assuming 'regular': %s", exc)
-            self._mode = "regular"
+            log.warning("could not read worker_mode_override, following the exchange: %s", exc)
+            self._override = None
 
-    @staticmethod
-    def is_live(state: str, mode: str) -> bool:
-        if mode == "always_open":
-            return True
-        if mode == "extended":
-            return state in ("pre", "regular", "post")
-        return state == "regular"
+    def stamp_closed(self) -> None:
+        """Mark the quotes closed on the way into idle.
+
+        Nothing else will: the worker is about to stop fetching, and the last
+        write of the day stamped whatever session it was in -- 'post', usually.
+        Without this the chip would read "After hours" in amber all weekend,
+        and the engine, which reads the same column, would keep the book open.
+        One PATCH, no feed request.
+        """
+        try:
+            self.db.update(
+                "quotes", {"market_state": "closed"},
+                {"market_state": "neq.closed"}, label="stamp_closed",
+            )
+        except PostgrestError as exc:
+            log.warning("could not stamp quotes closed: %s", exc)
 
     def heartbeat(self, source: str = "worker") -> None:
         self.db.update(
@@ -433,9 +446,13 @@ class Worker:
             with stage("check_database") as d:
                 self.refresh_settings()
                 d["symbols"] = len(self._symbols)
-                d["mode"] = self._mode
-            log.info("  database OK - %d tradable symbol(s), hours mode '%s'",
-                     len(self._symbols), self._mode)
+                d["session"] = session_state()
+                d["mode"] = mode_for(session_state(), self._override)
+                d["override"] = self._override
+            log.info("  database OK - %d tradable symbol(s), %s session -> %s mode%s",
+                     len(self._symbols), session_state(),
+                     mode_for(session_state(), self._override),
+                     "" if self._override is None else f" (forced {self._override})")
         except Exception as exc:  # noqa: BLE001
             log.error("  database FAILED: %s", exc)
             return 1
@@ -461,8 +478,8 @@ class Worker:
         return 0 if ok else 1
 
     # ------------------------------------------------------------------- loop
-    def tick(self) -> bool:
-        """One full cycle. Returns True if it was a live-market cycle."""
+    def tick(self) -> str:
+        """One full cycle. Returns the mode it ran in: idle, regular or live."""
         started = time.monotonic()
         self.cycle += 1
         state = session_state()
@@ -472,10 +489,35 @@ class Worker:
             self.last_settings_run = time.monotonic()
 
         symbols = self._symbols
-        live = self.is_live(state, self._mode)
+        mode = mode_for(state, self._override)
+        live = mode == "live"
+
+        # Idle: the exchange is shut, every price is the one it closed at, and
+        # asking Yahoo for it again 700 times an hour buys nothing. Do the
+        # settlement that is still owed, say we are alive so the control room
+        # does not read this as a dead feed, and stop there.
+        if mode == "idle":
+            if self.last_mode != "idle":
+                self.stamp_closed()
+            self.daily_jobs(state)
+            self.last_state = state
+            self.last_mode = mode
+            self.heartbeat("worker-idle")
+            log.info(
+                "cycle %d | %s | idle%s - no feed requests",
+                self.cycle, state, "" if self._override is None else " (forced)",
+                extra={"event": "cycle", "cycle": self.cycle, "ship": True,
+                       "duration_ms": int((time.monotonic() - started) * 1000),
+                       "rss_mb": rss_mb(),
+                       "detail": {"session": state, "mode": mode,
+                                  "override": self._override, "live": False}},
+            )
+            _shipper.flush()
+            return mode
+
         if not symbols:
             log.warning("no tradable instruments configured - sleeping")
-            return False
+            return "idle"
 
         # Refresh official closes on startup and every 6 hours, so the
         # day-change figures are measured from the real 4pm close.
@@ -494,6 +536,7 @@ class Worker:
         matched = self.run_matching() if pushed else None
         self.daily_jobs(state)
         self.last_state = state
+        self.last_mode = mode
 
         # Equity snapshots: every 5 minutes while the market is live, so the
         # ranking curve has resolution without bloating the table.
@@ -537,7 +580,7 @@ class Worker:
             "cycle %d | %s%s | %d quotes | %d new bars | %s | %.2fs | rss %sMB, avail %sMB",
             self.cycle,
             state,
-            "" if live else f" (idle, mode={self._mode})",
+            "" if live else f" ({mode})",
             pushed,
             new_bars,
             f"{fills} fill(s)" if fills else "no fills",
@@ -548,7 +591,7 @@ class Worker:
                 "event": "cycle", "cycle": self.cycle,
                 "duration_ms": int(elapsed * 1000), "rss_mb": rss, "ship": True,
                 "detail": {
-                    "session": state, "mode": self._mode, "live": live,
+                    "session": state, "mode": mode, "override": self._override, "live": live,
                     "quotes": pushed, "bars": new_bars, "fills": fills or 0,
                     "mem_available_mb": mem.get("MemAvailable"),
                     "swap_free_mb": mem.get("SwapFree"),
@@ -557,18 +600,20 @@ class Worker:
         )
         # One flush per cycle: the table stays current without a request per line.
         _shipper.flush()
-        return live
+        return mode
 
     def run(self) -> None:
         mem = mem_snapshot()
         log.info(
-            "worker starting | %d symbols max | cadence %ss live / %ss idle | "
+            "worker starting | %d symbols max | cadence %ss live / %ss regular / %ss idle | "
             "history every %ss | RAM %sMB (%sMB free), swap %sMB | logfile %s",
-            self.cfg.max_symbols, self.cfg.poll_interval, self.cfg.idle_interval,
+            self.cfg.max_symbols, self.cfg.live_interval, self.cfg.regular_interval,
+            self.cfg.idle_interval,
             self.cfg.history_interval, mem.get("MemTotal", "?"),
             mem.get("MemAvailable", "?"), mem.get("SwapTotal", "?"), _LOG_FILE or "none",
             extra={"event": "startup", "ship": True, "rss_mb": rss_mb(), "detail": {
-                "poll_interval": self.cfg.poll_interval,
+                "live_interval": self.cfg.live_interval,
+                "regular_interval": self.cfg.regular_interval,
                 "idle_interval": self.cfg.idle_interval,
                 "history_interval": self.cfg.history_interval,
                 "batch_size": self.cfg.batch_size,
@@ -588,17 +633,26 @@ class Worker:
                 extra={"event": "startup", "detail": mem},
             )
 
+        cadence = {
+            "live": self.cfg.live_interval,
+            "regular": self.cfg.regular_interval,
+            "idle": self.cfg.idle_interval,
+        }
+
         while _running:
             started = time.monotonic()
-            live = False
+            # A cycle that blew up says nothing about the session, so fall back
+            # to the pre/post cadence: fast enough to recover promptly, slow
+            # enough not to hammer a feed that is already failing.
+            mode = "regular"
             try:
-                live = self.tick()
+                mode = self.tick()
             except KeyboardInterrupt:
                 break
             except Exception as exc:  # noqa: BLE001 - the loop must survive anything
                 log.exception("cycle failed: %s", exc)
 
-            interval = self.cfg.poll_interval if live else self.cfg.idle_interval
+            interval = cadence[mode]
             deadline = started + interval
             while _running and time.monotonic() < deadline:
                 time.sleep(min(0.5, deadline - time.monotonic()))

@@ -116,7 +116,7 @@ React Query in `src/hooks/use-app-data.ts`, invalidated by the book channel.
 
 `worker/` targets a 1 GB free box: exactly one third-party dependency (yfinance), PostgREST spoken
 over `http.client` in `db.py`, no Docker, no supabase-py. `poller.py` is the loop; `feed.py` fetches;
-`market.py` tracks the US session and follows the admin's market-hours mode; `logbook.py` ships
+`market.py` tracks the US session and maps it to the worker's mode (`mode_for`); `logbook.py` ships
 WARNING+ and anomalous stages to the `worker_logs` table, which is what Admin → Control room reads.
 `worker/README.md` explains the cadence knobs and why the dependency diet is deliberate.
 

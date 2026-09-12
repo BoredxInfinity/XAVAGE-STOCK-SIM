@@ -28,13 +28,6 @@ const GROUPS: { title: string; blurb: string; fields: Field[] }[] = [
         hint: "Master switch. Turning this off halts every team instantly." },
       { key: "halt_reason", label: "Halt reason", kind: "text",
         hint: "Shown to participants on the ticker bar while trading is halted." },
-      { key: "market_hours_mode", label: "Market hours", kind: "select",
-        hint: "Regular = 9:30–16:00 ET only. Extended also allows pre/post. Always open ignores the clock.",
-        options: [
-          { value: "regular", label: "Regular hours only" },
-          { value: "extended", label: "Extended (pre + post)" },
-          { value: "always_open", label: "Always open" },
-        ] },
       { key: "competition_start_at", label: "Competition starts", kind: "datetime",
         hint: "Orders are refused before this moment. Leave blank for no gate." },
       { key: "competition_end_at", label: "Competition ends", kind: "datetime",

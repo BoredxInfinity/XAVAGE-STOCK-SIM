@@ -91,17 +91,30 @@ Both were dropped deliberately when this moved to a 1 GB instance.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `POLL_INTERVAL_SECONDS` | `5` | While the session is open. A cycle takes ~4s, so this is about as tight as it usefully goes |
-| `IDLE_INTERVAL_SECONDS` | `120` | Outside the session — nothing is moving |
+| `POLL_INTERVAL_SECONDS` | `5` | The `live` cadence, while the regular session is open. A cycle takes ~4s, so this is about as tight as it usefully goes |
+| `REGULAR_INTERVAL_SECONDS` | `120` | The `regular` cadence, through pre-market and after hours — real trading, but thin |
+| `IDLE_INTERVAL_SECONDS` | `60` | The `idle` cadence. No feed requests are made at all; this is only how often the worker says it is still alive |
 | `HISTORY_INTERVAL_SECONDS` | `1800` | 5D/1Y chart ranges. The 1m series rides the price tick, so it is never staler than the price |
 | `MAX_SYMBOLS` | `400` | Ceiling on the polled universe |
 | `BATCH_SIZE` | `60` | Symbols per bulk download |
 | `DOWNLOAD_THREADS` | `8` | yfinance fetches one URL per symbol; past 8 the gain is noise |
 | `BARS_PER_SYMBOL` | `500` | Cold-start backfill depth per symbol |
 
-The worker also follows the admin's **market hours mode** (`regular`,
-`extended`, `always_open`) from `game_settings`, so widening the session in the
-app switches the worker off its idle cadence too.
+### Modes
+
+The exchange clock picks the mode, and the mode picks the cadence:
+
+| Exchange | Mode | What runs |
+| --- | --- | --- |
+| regular | `live` | The whole pipeline at `POLL_INTERVAL_SECONDS` |
+| pre / post | `regular` | The same pipeline at `REGULAR_INTERVAL_SECONDS` |
+| closed | `idle` | Nothing. No yfinance requests; settlement still runs, and the heartbeat keeps the control room honest |
+
+`game_settings.worker_mode_override` forces a mode for rehearsals — set it from
+Admin → Control room. It is ignored while the regular session is on, so nobody
+can slow the feed under a live book. The engine reads the same rule
+(`private.session_mode()`), and the book is open in any mode but `idle`, so the
+feed and the order book can never disagree about whether the market is there.
 
 ## Safety
 

@@ -8,6 +8,22 @@ import { useQuotesVersion } from "@/hooks/use-quote";
 import { useNow } from "@/hooks/use-now";
 import { quoteStore } from "@/lib/quote-store";
 import { cn, num, pct, relative } from "@/lib/format";
+import type { MarketState } from "@/lib/database.types";
+
+/**
+ * The exchange's own session, in four states rather than open/shut.
+ *
+ * Pre and post are real trading -- thinner, wider spreads, but real -- and
+ * lumping them in with "closed" told a participant nothing about why their
+ * order behaved differently at 14:00 IST than at 21:00. Amber says the same
+ * thing a trading desk means by it: the market is there, tread carefully.
+ */
+const SESSION: Record<MarketState, { label: string; chip: string; live: boolean }> = {
+  regular: { label: "Market open", chip: "chip-up", live: true },
+  pre: { label: "Pre-market", chip: "chip-warn", live: true },
+  post: { label: "After hours", chip: "chip-warn", live: true },
+  closed: { label: "Market closed", chip: "chip-down", live: false },
+};
 
 /** Symbols pinned to the front of the tape; the rest follow alphabetically. */
 const PINNED = ["SPY", "QQQ", "DIA", "IWM", "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL"];
@@ -31,7 +47,7 @@ export function MarketBar() {
   }, [version]);
 
   const halted = status && !status.trading_enabled;
-  const open = status?.is_open;
+  const session = SESSION[status?.market_state ?? "closed"];
 
   return (
     <div className="border-b border-[var(--color-border-soft)] bg-[var(--color-bg-elev)]">
@@ -42,10 +58,9 @@ export function MarketBar() {
               <AlertTriangle size={11} /> Halted
             </span>
           ) : (
-            <span className={cn("chip", open ? "chip-up" : "chip-neutral")}>
-              <Radio size={11} className={open ? "live-dot" : ""} />
-              {open ? "Market open" : status?.market_state === "pre" ? "Pre-market"
-                : status?.market_state === "post" ? "After hours" : "Market closed"}
+            <span className={cn("chip", status ? session.chip : "chip-neutral")}>
+              <Radio size={11} className={session.live ? "live-dot" : ""} />
+              {status ? session.label : "Connecting…"}
             </span>
           )}
           <span className="hidden lg:inline text-[11px] text-[var(--color-text-faint)] num">
