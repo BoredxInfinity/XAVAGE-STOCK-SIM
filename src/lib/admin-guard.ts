@@ -36,7 +36,7 @@ export async function writeAudit(
   ctx: AdminContext,
   action: string,
   entityType: string,
-  entityId: string,
+  entityId: string | null,
   details: Record<string, unknown> = {},
 ) {
   await ctx.admin.from("audit_log").insert({

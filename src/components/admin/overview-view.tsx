@@ -5,17 +5,14 @@ import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  Activity, AlertTriangle, CheckCircle2, Loader2, Megaphone, Radio, Send, Trash2, Trophy,
+  Activity, AlertTriangle, Loader2, Megaphone, Radio, Send, Trash2, Trophy,
 } from "lucide-react";
 import { Panel } from "@/components/ui/panel";
 import { StatTile } from "@/components/ui/stat-tile";
 import { createClient } from "@/lib/supabase/client";
 import { useAnnouncements, useLeaderboard, useMarketStatus } from "@/hooks/use-app-data";
 import { useNow } from "@/hooks/use-now";
-import { WorkerLogsPanel } from "@/components/admin/worker-logs-panel";
-import { WorkerModeSwitch } from "@/components/admin/worker-mode-switch";
-import { WorkerTimingChart } from "@/components/admin/worker-timing-chart";
-import { cn, money, pct, relative, stamp } from "@/lib/format";
+import { cn, money, pct, stamp } from "@/lib/format";
 import type { MarketState } from "@/lib/database.types";
 
 const SESSION_LABEL: Record<MarketState, string> = {
@@ -108,21 +105,6 @@ export function OverviewView() {
         "panel-glow p-4 flex flex-wrap items-center gap-x-8 gap-y-3",
         !feedHealthy && "!border-[color-mix(in_oklab,var(--color-warn)_45%,transparent)]",
       )}>
-        <div className="flex items-center gap-2">
-          {feedHealthy
-            ? <CheckCircle2 size={18} className="text-[var(--color-up)]" />
-            : <AlertTriangle size={18} className="text-[var(--color-warn)]" />}
-          <div>
-            <p className="text-xs font-semibold">
-              {feedHealthy ? "Price feed healthy" : "Price feed stale"}
-            </p>
-            <p className="text-[11px] text-[var(--color-text-faint)]">
-              {lastTick ? `last tick ${relative(lastTick, now)}` : "no tick recorded yet"}
-              {health?.state?.last_tick_source ? ` · ${health.state.last_tick_source}` : ""}
-            </p>
-          </div>
-        </div>
-
         {/* The exchange's session, in the same four states participants see. */}
         <div className="flex items-center gap-2">
           <Radio size={16} className={cn(
@@ -138,8 +120,6 @@ export function OverviewView() {
           </div>
         </div>
 
-        <WorkerModeSwitch />
-
         <div className="flex items-center gap-2">
           <Activity size={16} className={status?.trading_enabled ? "text-[var(--color-up)]" : "text-[var(--color-down)]"} />
           <div>
@@ -153,6 +133,12 @@ export function OverviewView() {
         </div>
 
         <div className="flex-1" />
+
+        {!feedHealthy && (
+          <Link href="/admin/worker" className="chip chip-warn hover:opacity-80">
+            <AlertTriangle size={11} /> Price feed stale
+          </Link>
+        )}
 
         <Link href="/admin/settings" className="btn btn-ghost !py-1.5 !text-xs">
           Adjust the game
@@ -249,12 +235,6 @@ export function OverviewView() {
         </Panel>
       </div>
 
-      {/* What the price worker is actually doing. Its own journal lives on a
-          box nobody watches, so this is the only view an organiser gets. The
-          chart is the same rows read as a trend: drift in the cycle time
-          shows there long before anything in the log looks wrong. */}
-      <WorkerTimingChart />
-      <WorkerLogsPanel />
     </div>
   );
 }

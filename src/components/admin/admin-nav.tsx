@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity, CandlestickChart, LayoutDashboard, ListOrdered,
-  LogOut, Settings2, Shield, Trophy, Users,
+  LogOut, Radio, Settings2, Shield, Trophy, Users,
 } from "lucide-react";
 import { Logo } from "@/components/logo";
 import { cn } from "@/lib/format";
@@ -17,6 +17,7 @@ const LINKS = [
   { href: "/admin/settings", label: "Game settings", icon: Settings2 },
   { href: "/admin/instruments", label: "Instruments", icon: ListOrdered },
   { href: "/admin/activity", label: "Activity", icon: Activity },
+  { href: "/admin/worker", label: "Stock worker", icon: Radio },
 ];
 
 export function AdminNav({ displayName }: { displayName: string }) {

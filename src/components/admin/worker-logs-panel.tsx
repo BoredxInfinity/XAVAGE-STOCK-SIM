@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, ChevronRight, ScrollText } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { AlertTriangle, ChevronDown, ChevronRight, Loader2, ScrollText, Trash2 } from "lucide-react";
 import { Panel } from "@/components/ui/panel";
 import { createClient } from "@/lib/supabase/client";
 import { useNow } from "@/hooks/use-now";
@@ -24,9 +25,35 @@ const LEVEL_STYLE: Record<WorkerLogLevel, string> = {
 };
 
 export function WorkerLogsPanel() {
+  const qc = useQueryClient();
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["key"]>("all");
   const [open, setOpen] = useState<number | null>(null);
+  const [clearing, setClearing] = useState(false);
   const now = useNow();
+
+  // Before a rehearsal or a fresh event, so the control room shows this run
+  // rather than the last one. Confirmed because it cannot be undone -- the
+  // worker's own journal on the box survives, but this table does not.
+  async function clear() {
+    if (!window.confirm("Delete every line in the worker log? The worker's own log on the box is unaffected.")) return;
+    setClearing(true);
+    const res = await fetch("/api/admin/worker-logs", { method: "DELETE" });
+    setClearing(false);
+
+    // An expired session is redirected to /login by the middleware, which
+    // answers 200 with HTML -- so "ok" is not enough to go parsing JSON.
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body?.ok) {
+      toast.error("Could not clear the log", {
+        description: body?.error ?? "Your session may have expired — reload and try again.",
+      });
+      return;
+    }
+    const { removed } = body;
+    toast.success(removed ? `Cleared ${removed} line(s)` : "The log was already empty");
+    qc.invalidateQueries({ queryKey: ["worker-logs"] });
+    qc.invalidateQueries({ queryKey: ["worker-timings"] });
+  }
 
   const { data: logs = [], isLoading } = useQuery<WorkerLog[]>({
     queryKey: ["worker-logs", filter],
@@ -63,6 +90,15 @@ export function WorkerLogsPanel() {
               <AlertTriangle size={11} /> {problems}
             </span>
           )}
+          <button
+            onClick={clear}
+            disabled={clearing || logs.length === 0}
+            title="Delete every line in the worker log"
+            className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-[var(--color-border-soft)] text-[var(--color-text-faint)] hover:text-[var(--color-down)] hover:border-[color-mix(in_oklab,var(--color-down)_45%,transparent)] disabled:opacity-40 disabled:hover:text-[var(--color-text-faint)] transition-colors"
+          >
+            {clearing ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />} Clear
+          </button>
+
           <div className="flex rounded overflow-hidden border border-[var(--color-border-soft)]">
             {FILTERS.map((f) => (
               <button

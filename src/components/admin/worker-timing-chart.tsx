@@ -30,9 +30,6 @@ const WINDOWS = [
   { minutes: 60, label: "1h" },
 ] as const;
 
-/** Where the worker itself starts calling a stage slow (logbook.SLOW_MS). */
-const SLOW_MS = 5_000;
-
 const H = 180;
 const PAD = { top: 10, right: 10, bottom: 18, left: 46 };
 
@@ -45,12 +42,28 @@ const EVENT_COLOR: Record<string, string> = {
   prev_closes: "var(--color-up)",
   snapshot: "var(--color-warn)",
   profiles: "var(--color-neon-bright)",
+  backfill: "var(--color-violet-deep)",
 };
+/**
+ * What each stage actually is. The names are the worker's own event labels, and
+ * without this the chart is six coloured lines an organiser has no way to read.
+ */
+const STAGE_HELP: Record<string, string> = {
+  cycle: "One full pass of the worker: fetch prices, store them, match the book. The whole budget is the 5s cadence, so this is the number to watch.",
+  market_data: "Downloading live quotes and 1-minute bars for every symbol from Yahoo. Almost all of a cycle's time is spent here, waiting on the network.",
+  history: "Refreshing the longer chart series, 5D and 1M. Runs on its own timer, not every cycle, and is the worker's largest single allocation.",
+  backfill: "The cold start: writing a symbol's whole chart history the first time it is seen. Minutes, not seconds, and it should happen once.",
+  profiles: "Filling in company metadata — name, sector, exchange — for the instruments table. Every ten minutes, and nothing depends on it being quick.",
+  prev_closes: "Fetching the official prior-session closes. Every day-change percentage in the competition is measured against these.",
+};
+
+// Red is reserved: it marks the points where a stage failed, on whatever
+// series that was. A stage wearing it as its own colour would read as
+// permanently broken.
 const SPARE = [
-  "var(--color-down)",
-  "var(--color-violet-deep)",
   "var(--color-neon-deep)",
   "var(--color-up-dim)",
+  "var(--color-text-dim)",
 ];
 
 type Timing = Pick<WorkerLog, "id" | "ts" | "event" | "level" | "duration_ms" | "message">;
@@ -162,7 +175,7 @@ export function WorkerTimingChart() {
   const plotH = H - PAD.top - PAD.bottom;
 
   const peak = visible.reduce((m, s) => s.points.reduce((n, p) => Math.max(n, p.ms), m), 0);
-  const top = niceMax(Math.max(peak, SLOW_MS / 5));
+  const top = niceMax(Math.max(peak, 1_000));
 
   const x = (t: number) => PAD.left + ((t - t0) / windowMs) * plotW;
   const y = (ms: number) => {
@@ -191,24 +204,16 @@ export function WorkerTimingChart() {
   }, [t0, windowMs, width]);
 
   /**
-   * A stage that runs on every cycle is a trace; one that runs every half hour
-   * is a set of events, and joining three of those with a line draws a 30-minute
-   * plateau that never happened. So: frequent stages get a line (broken across
-   * any gap wide enough to mean the worker stopped), infrequent ones get a
-   * stem and a marker.
+   * Every series is a line through every point it has, gaps included.
+   *
+   * This used to split a series wherever the interval widened, on the grounds
+   * that joining two half-hourly points draws a plateau that never happened.
+   * True, but it left most stages as loose dots with no line at all, and a
+   * chart you cannot trace with your eye is worse than one that overstates a
+   * connection. The dots still mark where the real readings are.
    */
-  function shape(points: Point[]) {
-    const gaps = points.slice(1).map((p, i) => p.t - points[i].t).sort((a, b) => a - b);
-    const median = gaps.length ? gaps[Math.floor(gaps.length / 2)] : Infinity;
-    if (points.length < 3 || median > 45_000) return { trace: false, segments: [] as Point[][] };
-
-    const limit = Math.max(15_000, median * 4);
-    const out: Point[][] = [[points[0]]];
-    for (let i = 1; i < points.length; i++) {
-      if (points[i].t - points[i - 1].t > limit) out.push([points[i]]);
-      else out[out.length - 1].push(points[i]);
-    }
-    return { trace: true, segments: out };
+  function points(series: Point[]) {
+    return series.map((p) => `${x(p.t)},${y(p.ms)}`).join(" ");
   }
 
   function onMove(e: React.PointerEvent<SVGSVGElement>) {
@@ -228,9 +233,6 @@ export function WorkerTimingChart() {
     setHover(best);
   }
 
-  const newest = visible.reduce<Point | null>(
-    (m, s) => (s.last && (!m || s.last.t > m.t) ? s.last : m), null,
-  );
   const cycles = all.find((s) => s.event === "cycle");
   const empty = !isLoading && all.length === 0;
 
@@ -306,22 +308,6 @@ export function WorkerTimingChart() {
               </g>
             ))}
 
-            {/* the worker's own "this was slow" threshold */}
-            {SLOW_MS <= top && (
-              <g>
-                <line
-                  x1={PAD.left} x2={width - PAD.right} y1={y(SLOW_MS)} y2={y(SLOW_MS)}
-                  stroke="var(--color-warn)" strokeWidth={1} strokeDasharray="3 4" opacity={0.5}
-                />
-                <text
-                  x={width - PAD.right} y={y(SLOW_MS) - 3} textAnchor="end"
-                  fontSize={9} fill="var(--color-warn)" opacity={0.75}
-                >
-                  slow
-                </text>
-              </g>
-            )}
-
             {/* time axis */}
             {xTicks.map((t, i) => (
               <text
@@ -335,56 +321,35 @@ export function WorkerTimingChart() {
             ))}
 
             {visible.map((s) => {
-              const { trace, segments } = shape(s.points);
-              const dots = trace && s.points.length <= 140;
-              const floor = PAD.top + plotH;
+              const dots = s.points.length <= 140;
               return (
                 <g key={s.event}>
-                  {segments.map((seg, i) => (
+                  {s.points.length > 1 && (
                     <polyline
-                      key={i}
                       fill="none"
                       stroke={s.color}
                       strokeWidth={1.4}
                       strokeLinejoin="round"
                       strokeLinecap="round"
-                      points={seg.map((p) => `${x(p.t)},${y(p.ms)}`).join(" ")}
+                      points={points(s.points)}
                       opacity={0.9}
                     />
-                  ))}
+                  )}
                   {s.points.map((p) => {
                     const bad = p.level !== "INFO" && p.level !== "DEBUG";
-                    if (trace && !dots && !bad && p !== s.last) return null;
-                    const px = x(p.t);
-                    const py = y(p.ms);
+                    if (!dots && !bad && p !== s.last) return null;
                     return (
-                      <g key={p.id}>
-                        {!trace && (
-                          <line
-                            x1={px} x2={px} y1={py} y2={floor}
-                            stroke={s.color} strokeWidth={1} opacity={0.35}
-                          />
-                        )}
-                        <circle
-                          cx={px} cy={py} r={bad ? 3 : trace ? 1.8 : 2.6}
-                          fill={bad ? "var(--color-down)" : s.color}
-                          opacity={bad ? 1 : 0.85}
-                        />
-                      </g>
+                      <circle
+                        key={p.id}
+                        cx={x(p.t)} cy={y(p.ms)} r={bad ? 3 : 2}
+                        fill={bad ? "var(--color-down)" : s.color}
+                        opacity={bad ? 1 : 0.9}
+                      />
                     );
                   })}
                 </g>
               );
             })}
-
-            {/* the live head: the most recent timed stage of any kind */}
-            {newest && (
-              <circle
-                cx={x(newest.t)} cy={y(newest.ms)} r={3.5}
-                fill="none" stroke="var(--color-neon-bright)" strokeWidth={1.2}
-                className="live-dot"
-              />
-            )}
 
             {hover && (
               <line
@@ -437,9 +402,23 @@ export function WorkerTimingChart() {
             );
           })}
           <span className="ml-auto text-[10px] text-[var(--color-text-faint)]">
-            duration_ms per shipped stage · click a stage to hide it
+            click a stage to hide it
           </span>
         </div>
+      )}
+
+      {/* What the stages mean. Only the ones actually on the chart. */}
+      {all.length > 0 && (
+        <dl className="px-1 pt-3 mt-2 border-t border-[var(--color-border-soft)] space-y-1.5">
+          {all.filter((s) => STAGE_HELP[s.event]).map((s) => (
+            <div key={s.event} className="flex gap-2 text-[10px] leading-relaxed">
+              <dt className="shrink-0 font-mono w-[5.5rem]" style={{ color: s.color }}>
+                {s.event}
+              </dt>
+              <dd className="text-[var(--color-text-faint)]">{STAGE_HELP[s.event]}</dd>
+            </div>
+          ))}
+        </dl>
       )}
     </Panel>
   );
