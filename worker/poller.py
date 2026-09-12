@@ -41,7 +41,7 @@ from logbook import (  # noqa: E402
     SupabaseLogHandler, add_file_handler, mem_snapshot, rss_mb, stage,
 )
 from feed import fetch_bars_bulk, fetch_daily_closes, fetch_intraday, fetch_profile  # noqa: E402
-from market import just_closed, mode_for, now_ny, session_state  # noqa: E402
+from market import just_closed, mode_for, now_ny, session_anchor, session_state  # noqa: E402
 
 # Route INFO/DEBUG to stdout and WARNING+ to stderr, so "error" in the log
 # viewer means something actually went wrong rather than "the worker is
@@ -106,6 +106,8 @@ class Worker:
         self.last_snapshot = 0.0
         self.last_profile_run = 0.0
         self.last_closes_run = 0.0
+        # Which session the cached previous closes were measured against.
+        self.closes_anchor = None
         self.last_history_run = 0.0
         # Per-interval timers: 5m and 1d age at different rates.
         self.history_run: dict[str, float] = {}
@@ -519,13 +521,21 @@ class Worker:
             log.warning("no tradable instruments configured - sleeping")
             return "idle"
 
-        # Refresh official closes on startup and every 6 hours, so the
-        # day-change figures are measured from the real 4pm close.
-        if time.monotonic() - self.last_closes_run > 21_600 or not self.prev_closes:
+        # Refresh official closes on startup, when the session rolls over, and
+        # every 6 hours otherwise. The rollover is the one that matters: a
+        # six-hour timer can leave the previous close pointing at the session
+        # before last for most of a morning, and every day-change figure in the
+        # competition is measured against it.
+        anchor = session_anchor()
+        if (not self.prev_closes
+                or anchor != self.closes_anchor
+                or time.monotonic() - self.last_closes_run > 21_600):
             with stage("prev_closes", self.cycle, ship=True) as d:
                 self.refresh_prev_closes(symbols)
                 d["cached"] = len(self.prev_closes)
+                d["anchor"] = str(anchor)
             self.last_closes_run = time.monotonic()
+            self.closes_anchor = anchor
 
         with stage("market_data", self.cycle, symbols=len(symbols)) as d:
             pushed, new_bars = self.push_market_data(symbols)

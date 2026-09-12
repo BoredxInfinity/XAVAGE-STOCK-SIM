@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from market import NY, normalise_state
+from market import NY, normalise_state, session_anchor
 
 # yfinance caches exchange timezones on disk. Its default location can be
 # unwritable or race between threads ("Failed to create TzCache"), which is
@@ -255,13 +255,24 @@ def fetch_daily_closes(symbols: list[str], batch_size: int = 60, threads: int = 
 
     for batch in _chunks(symbols, batch_size):
         frame = _download(batch, "5d", "1d", prepost=False, threads=threads)
-        today = pd.Timestamp.now(tz=NY).normalize()
+        # Anchored on the session the current price belongs to, not on the
+        # calendar day. Those are the same thing during a session and differ
+        # from midnight ET until the next one opens -- and using the calendar
+        # there makes "previous close" mean this session's own close, which
+        # turns every day-change figure into the after-hours drift.
+        anchor = session_anchor()
 
         for symbol, sub in _split(frame, batch):
             try:
-                idx = _to_utc_index(sub).tz_convert(NY)
-                # Drop today's still-forming bar -- we want the PRIOR close.
-                prior = sub.iloc[: idx.searchsorted(today, side="left")]
+                # Compare on the TRADING DATE, which is the bar's UTC date.
+                # yfinance stamps a daily bar at UTC midnight of its session,
+                # so in New York it reads 20:00 the evening before: anchoring
+                # an ET-midnight cutoff against that is off by a day, and the
+                # slice that was meant to drop the forming bar kept it --
+                # making "previous close" the live price, and the day change
+                # roughly zero, for the whole session.
+                dates = _to_utc_index(sub).date
+                prior = sub[dates < anchor]
                 if prior.empty:
                     prior = sub.iloc[:-1]
                 if prior.empty:

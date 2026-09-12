@@ -5,7 +5,7 @@ open/close, so we corroborate it with the exchange clock in America/New_York.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 NY = ZoneInfo("America/New_York")
@@ -109,3 +109,31 @@ def mode_for(state: str, override: str | None) -> str:
     if override in MODES:
         return override
     return "regular" if state in ("pre", "post") else "idle"
+
+
+def session_anchor(moment: datetime | None = None) -> date:
+    """The date of the session the current price belongs to.
+
+    Not the calendar date. At 23:00 ET on Friday the exchange has been shut for
+    three hours, but the price on the tape is still Friday's, so Friday is the
+    anchor. At 00:01 ET on Saturday the calendar has turned and the price has
+    not: the anchor is still Friday.
+
+    This is what "previous close" has to be measured against. Anchoring on the
+    calendar day instead means that from midnight ET -- 09:30 IST, breakfast
+    for this competition -- the prior close silently becomes *this* session's
+    close, and every day-change figure on the tape collapses to the after-hours
+    drift. Friday's +1.8% reads as +0.08% all weekend.
+    """
+    moment = moment or now_ny()
+    if is_trading_day(moment) and moment.time() >= PRE_OPEN:
+        return moment.date()
+
+    # Walk back to the most recent day that actually traded. Ten days clears
+    # the longest run of weekend plus holidays the calendar can produce.
+    day = moment.date()
+    for _ in range(10):
+        day = day - timedelta(days=1)
+        if day.weekday() < 5 and day not in HOLIDAYS:
+            return day
+    return day
