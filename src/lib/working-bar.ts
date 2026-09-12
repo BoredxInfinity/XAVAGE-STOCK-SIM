@@ -28,6 +28,8 @@ export interface WorkingBarInput {
   stepSec: number;
   /** Newest time already written to the series, history included. */
   floor: number | null;
+  /** How far past the newest real bar the live price may be projected. */
+  maxGapSec: number;
 }
 
 /**
@@ -35,9 +37,18 @@ export interface WorkingBarInput {
  * because it would land behind what is already on the chart.
  */
 export function nextWorkingBar({
-  bar, last, price, nowMs, stepSec, floor,
+  bar, last, price, nowMs, stepSec, floor, maxGapSec,
 }: WorkingBarInput): Bar | null {
   const bucket = Math.floor(nowMs / 1000 / stepSec) * stepSec;
+
+  // Stop projecting once the history has stopped arriving. The game can be
+  // held open after the exchange has closed (market_hours_mode = always_open),
+  // and the last price stays tradable -- but Yahoo writes no bars over a
+  // weekend, so the bucket at `now` can be hours or days past the newest real
+  // one. The chart plots bars by index, not by time, so that candle lands
+  // flush against Friday's close and the axis reads as a jump: 05:04 to 15:34
+  // with nothing in between. Better to end the series where the data ends.
+  if (bucket - last.time > maxGapSec) return null;
 
   // Never draw behind the history we were given: if the server's newest bar is
   // ahead of our bucket (clock skew, a slow refresh), sit on that one.

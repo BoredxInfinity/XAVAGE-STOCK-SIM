@@ -22,10 +22,16 @@ type Range = (typeof RANGES)[number];
  * against how often the worker actually writes each series: 1m bars land every
  * cycle (~20s), 5m and 1d on the history timer.
  */
-const RANGE_SPEC: Record<Range, { stepSec: number; refetchMs: number }> = {
-  "1D": { stepSec: 60, refetchMs: 30_000 },
-  "5D": { stepSec: 300, refetchMs: 120_000 },
-  "1M": { stepSec: 86_400, refetchMs: 300_000 },
+//
+// `maxGapSec` is how far past the newest real bar the live price may be drawn.
+// Generous enough that a slow history refresh never freezes the tape, tight
+// enough that a closed exchange does not get a candle: intraday, a few steps;
+// daily, three days, so the live price still shows on a Monday morning before
+// the day's own daily bar has been written.
+const RANGE_SPEC: Record<Range, { stepSec: number; refetchMs: number; maxGapSec: number }> = {
+  "1D": { stepSec: 60, refetchMs: 30_000, maxGapSec: 600 },
+  "5D": { stepSec: 300, refetchMs: 120_000, maxGapSec: 1_800 },
+  "1M": { stepSec: 86_400, refetchMs: 300_000, maxGapSec: 259_200 },
 };
 
 export function PriceChart({
@@ -243,6 +249,7 @@ export function PriceChart({
       nowMs: now,
       stepSec: RANGE_SPEC[range].stepSec,
       floor: lastWritten.current,
+      maxGapSec: RANGE_SPEC[range].maxGapSec,
     });
     if (!bar) return;
 
