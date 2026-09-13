@@ -115,9 +115,11 @@ class Worker:
         self._symbols: list[str] = []
         # An organiser's forced mode, or None while following the exchange.
         self._override: str | None = None
-        # The mode the previous cycle ran in, so the transition into idle can
-        # close the book exactly once instead of on every idle cycle.
-        self.last_mode = "regular"
+        # The mode the previous cycle ran in, so a change is noticed exactly
+        # once: the transition into idle closes the book, and any transition is
+        # logged. None until the first cycle, which announces what it started in
+        # rather than inventing a switch that never happened.
+        self.last_mode: str | None = None
         # Newest bar already written per (symbol, interval), so each cycle
         # sends the handful that are new instead of the whole series.
         self.marks: dict[tuple[str, str], object] = {}
@@ -172,6 +174,52 @@ class Worker:
         except PostgrestError as exc:
             log.warning("could not read worker_mode_override, following the exchange: %s", exc)
             self._override = None
+
+    def note_mode(self, previous: str | None, mode: str, state: str) -> None:
+        """Say so, once, when the gear changes.
+
+        Every cycle line already carries the mode, but that is hundreds of
+        lines a day and the one worth finding is the one where it changed.
+        "When did the feed stop fetching?" should be answerable by reading a
+        single line in Admin -> Stock worker, not by scrolling until the shape
+        of the messages changes.
+
+        Shipped to the table deliberately: a routine INFO line stays on the box,
+        and this is the opposite of routine even though it is expected.
+        """
+        cadence = {"live": self.cfg.live_interval,
+                   "regular": self.cfg.regular_interval,
+                   "idle": self.cfg.idle_interval}[mode]
+
+        if state == "regular" and self._override is not None:
+            why = "regular session, override ignored while the market is open"
+        elif self._override is not None:
+            why = f"forced to {self._override} by an organiser"
+        else:
+            why = f"{state} session"
+
+        doing = {
+            "live": "full pipeline",
+            "regular": "slow poll",
+            "idle": "no feed requests",
+        }[mode]
+
+        if previous is None:
+            message = f"worker starting in {mode} mode - {why}, {doing}, every {cadence}s"
+        else:
+            message = f"mode {previous} -> {mode} - {why}, {doing}, every {cadence}s"
+
+        log.info(
+            message,
+            extra={"event": "mode", "cycle": self.cycle, "ship": True,
+                   "rss_mb": rss_mb(),
+                   "detail": {"from": previous, "to": mode, "session": state,
+                              "override": self._override, "interval_s": cadence}},
+        )
+        # Straight out, rather than waiting for the batch: on the way into idle
+        # the next flush is a minute away, and this is the line someone is
+        # looking for when they wonder whether the feed died or stood down.
+        _shipper.flush()
 
     def stamp_closed(self) -> None:
         """Mark the quotes closed on the way into idle.
@@ -494,16 +542,19 @@ class Worker:
         mode = mode_for(state, self._override)
         live = mode == "live"
 
+        previous, self.last_mode = self.last_mode, mode
+        if mode != previous:
+            self.note_mode(previous, mode, state)
+
         # Idle: the exchange is shut, every price is the one it closed at, and
         # asking Yahoo for it again 700 times an hour buys nothing. Do the
         # settlement that is still owed, say we are alive so the control room
         # does not read this as a dead feed, and stop there.
         if mode == "idle":
-            if self.last_mode != "idle":
+            if previous != "idle":
                 self.stamp_closed()
             self.daily_jobs(state)
             self.last_state = state
-            self.last_mode = mode
             self.heartbeat("worker-idle")
             log.info(
                 "cycle %d | %s | idle%s - no feed requests",
@@ -546,7 +597,6 @@ class Worker:
         matched = self.run_matching() if pushed else None
         self.daily_jobs(state)
         self.last_state = state
-        self.last_mode = mode
 
         # Equity snapshots: every 5 minutes while the market is live, so the
         # ranking curve has resolution without bloating the table.
