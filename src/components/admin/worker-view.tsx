@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useMarketStatus } from "@/hooks/use-app-data";
 import { useNow } from "@/hooks/use-now";
 import { WorkerModeSwitch } from "@/components/admin/worker-mode-switch";
+import { WorkerCadencePanel } from "@/components/admin/worker-cadence-panel";
 import { WorkerTimingChart } from "@/components/admin/worker-timing-chart";
 import { WorkerLogsPanel } from "@/components/admin/worker-logs-panel";
 import { cn, relative } from "@/lib/format";
@@ -82,6 +83,7 @@ export function WorkerView() {
         <WorkerModeSwitch />
       </div>
 
+      <WorkerCadencePanel />
       <WorkerTimingChart />
       <WorkerLogsPanel />
     </div>

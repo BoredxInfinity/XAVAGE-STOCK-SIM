@@ -113,6 +113,14 @@ class Worker:
         self.history_run: dict[str, float] = {}
         self.last_settings_run = 0.0
         self._symbols: list[str] = []
+        # The cadences in force, seconds. Seeded from the environment and
+        # overridden by the control room; see refresh_settings().
+        self.intervals = {
+            "live": cfg.live_interval,
+            "regular": cfg.regular_interval,
+            "idle": cfg.idle_interval,
+            "history": cfg.history_interval,
+        }
         # An organiser's forced mode, or None while following the exchange.
         self._override: str | None = None
         # The mode the previous cycle ran in, so a change is noticed exactly
@@ -167,13 +175,51 @@ class Worker:
         try:
             settings, _ = self.db.select(
                 "game_settings",
-                {"select": "worker_mode_override", "id": "eq.true", "limit": 1},
+                {"select": "worker_mode_override,worker_live_interval,"
+                           "worker_regular_interval,worker_idle_interval,"
+                           "worker_history_interval",
+                 "id": "eq.true", "limit": 1},
                 label="game_settings",
             )
-            self._override = (settings[0].get("worker_mode_override") if settings else None) or None
+            row = settings[0] if settings else {}
+            self._override = row.get("worker_mode_override") or None
+            self.apply_cadence(row)
         except PostgrestError as exc:
-            log.warning("could not read worker_mode_override, following the exchange: %s", exc)
-            self._override = None
+            log.warning("could not read worker settings, keeping the ones in force: %s", exc)
+
+    def apply_cadence(self, row: dict) -> None:
+        """Take the cadences from the control room, and say so when they move.
+
+        A null column means the organiser has not expressed an opinion, so the
+        value the worker was started with stands. That way an untouched
+        deployment behaves exactly as its environment says, and the app only
+        ever overrides deliberately.
+        """
+        wanted = {
+            "live": row.get("worker_live_interval") or self.cfg.live_interval,
+            "regular": row.get("worker_regular_interval") or self.cfg.regular_interval,
+            "idle": row.get("worker_idle_interval") or self.cfg.idle_interval,
+            "history": row.get("worker_history_interval") or self.cfg.history_interval,
+        }
+        changed = {k: (self.intervals[k], v) for k, v in wanted.items() if self.intervals[k] != v}
+        if not changed:
+            return
+
+        self.intervals = wanted
+        # The line an organiser is looking for after pressing save: not that
+        # the value was stored -- the app already told them that -- but that
+        # the worker has read it and is running to it.
+        log.info(
+            "cadence now %s (was %s) - in force from this cycle",
+            ", ".join(f"{k} {new}s" for k, (_, new) in sorted(changed.items())),
+            ", ".join(f"{k} {old}s" for k, (old, _) in sorted(changed.items())),
+            extra={"event": "cadence", "cycle": self.cycle, "ship": True,
+                   "rss_mb": rss_mb(),
+                   "detail": {**{f"{k}_interval": v for k, v in wanted.items()},
+                              "changed": {k: {"from": o, "to": n}
+                                          for k, (o, n) in sorted(changed.items())}}},
+        )
+        _shipper.flush()
 
     def note_mode(self, previous: str | None, mode: str, state: str) -> None:
         """Say so, once, when the gear changes.
@@ -187,9 +233,7 @@ class Worker:
         Shipped to the table deliberately: a routine INFO line stays on the box,
         and this is the opposite of routine even though it is expected.
         """
-        cadence = {"live": self.cfg.live_interval,
-                   "regular": self.cfg.regular_interval,
-                   "idle": self.cfg.idle_interval}[mode]
+        cadence = self.intervals[mode]
 
         if state == "regular" and self._override is not None:
             why = "regular session, override ignored while the market is open"
@@ -403,7 +447,7 @@ class Worker:
         now = time.monotonic()
         due: list[tuple[str, str]] = []
         for interval, every, seed_period, tail_period in (
-            ("5m", self.cfg.history_interval, "5d", "1d"),
+            ("5m", self.intervals["history"], "5d", "1d"),
             ("1d", self.cfg.daily_interval, "1mo", "5d"),
         ):
             if now - self.history_run.get(interval, 0.0) < every:
@@ -667,15 +711,12 @@ class Worker:
         log.info(
             "worker starting | %d symbols max | cadence %ss live / %ss regular / %ss idle | "
             "history every %ss | RAM %sMB (%sMB free), swap %sMB | logfile %s",
-            self.cfg.max_symbols, self.cfg.live_interval, self.cfg.regular_interval,
-            self.cfg.idle_interval,
-            self.cfg.history_interval, mem.get("MemTotal", "?"),
+            self.cfg.max_symbols, self.intervals["live"], self.intervals["regular"],
+            self.intervals["idle"],
+            self.intervals["history"], mem.get("MemTotal", "?"),
             mem.get("MemAvailable", "?"), mem.get("SwapTotal", "?"), _LOG_FILE or "none",
             extra={"event": "startup", "ship": True, "rss_mb": rss_mb(), "detail": {
-                "live_interval": self.cfg.live_interval,
-                "regular_interval": self.cfg.regular_interval,
-                "idle_interval": self.cfg.idle_interval,
-                "history_interval": self.cfg.history_interval,
+                **{f"{k}_interval": v for k, v in self.intervals.items()},
                 "batch_size": self.cfg.batch_size,
                 "download_threads": self.cfg.download_threads,
                 "mem_total_mb": mem.get("MemTotal"),
@@ -693,12 +734,6 @@ class Worker:
                 extra={"event": "startup", "detail": mem},
             )
 
-        cadence = {
-            "live": self.cfg.live_interval,
-            "regular": self.cfg.regular_interval,
-            "idle": self.cfg.idle_interval,
-        }
-
         while _running:
             started = time.monotonic()
             # A cycle that blew up says nothing about the session, so fall back
@@ -712,7 +747,8 @@ class Worker:
             except Exception as exc:  # noqa: BLE001 - the loop must survive anything
                 log.exception("cycle failed: %s", exc)
 
-            interval = cadence[mode]
+            # Read per iteration: the control room can move these mid-event.
+            interval = self.intervals[mode]
             deadline = started + interval
             while _running and time.monotonic() < deadline:
                 time.sleep(min(0.5, deadline - time.monotonic()))

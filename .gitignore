@@ -22,3 +22,6 @@ worker/.env*
 # worker deploy bundle (built by worker/build-bundle.sh)
 xavage-worker-bundle.tar.gz
 worker/libs/
+
+# local load-testing harness (loadtest/) — throwaway, never deployed
+loadtest/

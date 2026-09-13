@@ -110,6 +110,12 @@ The exchange clock picks the mode, and the mode picks the cadence:
 | pre / post | `regular` | The same pipeline at `REGULAR_INTERVAL_SECONDS` |
 | closed | `idle` | Nothing. No yfinance requests; settlement still runs, and the heartbeat keeps the control room honest |
 
+The cadences are also settable from Admin -> Stock worker, which writes them
+to `game_settings`. A value there overrides the environment from the worker's
+next settings refresh -- within a minute, no restart -- and the worker logs
+what it is now running to. A blank field means the environment still decides,
+so an untouched deployment behaves exactly as the table above says.
+
 `game_settings.worker_mode_override` forces a mode for rehearsals — set it from
 Admin → Control room. It is ignored while the regular session is on, so nobody
 can slow the feed under a live book. The engine reads the same rule

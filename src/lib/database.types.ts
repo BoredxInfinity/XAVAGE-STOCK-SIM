@@ -171,6 +171,14 @@ export type GameSettings = {
   allow_fractional_shares: boolean;
   /** Testing lever only: force the worker outside regular hours. See WorkerMode. */
   worker_mode_override: WorkerMode | null;
+  /**
+   * Worker cadences in seconds. NULL keeps whatever the worker was started
+   * with, so an untouched deployment behaves as its environment says.
+   */
+  worker_live_interval: number | null;
+  worker_regular_interval: number | null;
+  worker_idle_interval: number | null;
+  worker_history_interval: number | null;
   price_staleness_seconds: number;
   competition_start_at: string | null;
   competition_end_at: string | null;
