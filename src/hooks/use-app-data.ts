@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase/client";
 import type {
-  Announcement, LeaderboardRow, MarketStatus, Order,
+  Announcement, EquityCurve, EquityPoint, LeaderboardRow, MarketStatus, Order,
   PortfolioResponse, Trade,
 } from "@/lib/database.types";
 
@@ -85,19 +85,25 @@ export function useLeaderboard(enabled = true) {
   });
 }
 
-/** Equity curve for the caller's team (or a specific team, for admins). */
+/**
+ * Equity curve for the caller's team (or a specific team, for admins).
+ *
+ * Bucketed server-side by get_equity_curve rather than read from
+ * portfolio_snapshots directly. The table read took the oldest 2000 rows,
+ * which froze the chart at about day twelve, and cost 54.6 KB a minute per
+ * open tab. See the migration for the arithmetic.
+ */
 export function useEquityCurve(teamId?: string) {
   return useQuery({
     queryKey: ["equity-curve", teamId ?? "self"],
-    queryFn: async () => {
-      let q = createClient().from("portfolio_snapshots")
-        .select("ts, equity, cash, positions_value, total_return_pct")
-        .order("ts", { ascending: true }).limit(2000);
-      if (teamId) q = q.eq("team_id", teamId);
-      const { data, error } = await q;
+    queryFn: async (): Promise<EquityPoint[]> => {
+      const { data, error } = await createClient()
+        .rpc("get_equity_curve", teamId ? { p_team_id: teamId } : {});
       if (error) throw error;
-      return data ?? [];
+      return (data as unknown as EquityCurve)?.points ?? [];
     },
-    refetchInterval: 60_000,
+    // Snapshots land about every nine minutes, so the old 60s poll fetched
+    // the same curve nine times over.
+    refetchInterval: 300_000,
   });
 }

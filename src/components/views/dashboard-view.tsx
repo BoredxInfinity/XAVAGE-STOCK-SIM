@@ -87,7 +87,7 @@ export function DashboardView() {
           title="Equity curve"
           action={
             <span className="text-[11px] num text-[var(--color-text-faint)]">
-              {curve.length} snapshot{curve.length === 1 ? "" : "s"}
+              {curve.length} point{curve.length === 1 ? "" : "s"}
             </span>
           }
           bodyClassName="p-2"

@@ -98,6 +98,17 @@ export type LiveQuote = Pick<
   | "volume" | "quote_time" | "updated_at"
 >;
 
+/** One drawn point on the equity curve. The chart renders exactly these. */
+export type EquityPoint = {
+  ts: string;
+  equity: number;
+}
+
+export type EquityCurve = {
+  team_id: string | null;
+  points: EquityPoint[];
+}
+
 export type Order = {
   id: string;
   team_id: string;
@@ -186,6 +197,8 @@ export type GameSettings = {
   allow_fractional_shares: boolean;
   /** Testing lever only: force the worker outside regular hours. See WorkerMode. */
   worker_mode_override: WorkerMode | null;
+  /** How many instruments the worker quotes. NULL keeps the worker's own MAX_SYMBOLS. */
+  worker_max_symbols: number | null;
   /**
    * Worker cadences in seconds. NULL keeps whatever the worker was started
    * with, so an untouched deployment behaves as its environment says.
@@ -335,6 +348,16 @@ export type MarketStatus = {
     | "leaderboard_visible_to_participants">;
 }
 
+/**
+ * `instruments` narrowed to what the worker is actually quoting: is_tradable,
+ * ordered by symbol, capped at game_settings.worker_max_symbols. Participants
+ * list, search and trade from this; the raw table is for admins.
+ */
+export type TradableInstrument = Pick<
+  Instrument,
+  "symbol" | "name" | "exchange" | "sector" | "asset_type" | "is_tradable" | "is_halted"
+> & { halt_reason: string | null };
+
 export type PlaceOrderResult = {
   ok: boolean;
   executed?: boolean;
@@ -382,13 +405,16 @@ export type Database = {
       }>;
       worker_logs: Row<WorkerLog>;
     };
-    Views: { [_ in never]: never };
+    Views: {
+      tradable_instruments: { Row: TradableInstrument; Relationships: [] };
+    };
     Functions: {
       place_order: { Args: Record<string, unknown>; Returns: PlaceOrderResult };
       cancel_order: { Args: { p_order_id: string }; Returns: { ok: boolean; message: string } };
       get_portfolio: { Args: { p_team_id?: string }; Returns: PortfolioResponse };
       get_leaderboard: { Args: Record<PropertyKey, never>; Returns: { ok: true; generated_at: string; teams: LeaderboardRow[] } };
       get_market_status: { Args: Record<PropertyKey, never>; Returns: MarketStatus };
+      get_equity_curve: { Args: { p_team_id?: string; p_points?: number }; Returns: EquityCurve };
       admin_update_settings: { Args: { p_patch: Record<string, unknown> }; Returns: Record<string, unknown> };
       admin_adjust_cash: { Args: { p_team_id: string; p_amount: number; p_note?: string }; Returns: Record<string, unknown> };
       admin_set_symbol_halt: { Args: { p_symbol: string; p_halted: boolean; p_reason?: string }; Returns: Record<string, unknown> };
