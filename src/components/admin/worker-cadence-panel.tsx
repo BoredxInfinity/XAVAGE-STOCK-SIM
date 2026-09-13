@@ -26,6 +26,8 @@ type Row = {
   hint: string;
   min: number;
   max: number;
+  /** Suffix shown in the field. Everything here is seconds except the cap. */
+  unit?: string;
 };
 
 const ROWS: Row[] = [
@@ -48,6 +50,11 @@ const ROWS: Row[] = [
     key: "worker_history_interval", reported: "history_interval",
     label: "History", min: 60, max: 86400,
     hint: "Between refreshes of the 5D chart series. The worker's largest single allocation, and it runs inside the same loop as prices.",
+  },
+  {
+    key: "worker_max_symbols", reported: "max_symbols",
+    label: "Symbols", min: 1, max: 2000, unit: "",
+    hint: "How many instruments the worker quotes, and therefore how many participants can list, search and trade — past this a symbol does not exist to them. Every extra symbol costs time in every cycle and memory on the box.",
   },
 ];
 
@@ -135,7 +142,8 @@ export function WorkerCadencePanel() {
 
       const n = Number(raw);
       if (!Number.isInteger(n) || n < r.min || n > r.max) {
-        toast.error(`${r.label} must be a whole number between ${r.min}s and ${r.max}s`);
+        const u = r.unit ?? "s";
+        toast.error(`${r.label} must be a whole number between ${r.min}${u} and ${r.max}${u}`);
         return;
       }
       patch[r.key] = n;
@@ -182,7 +190,7 @@ export function WorkerCadencePanel() {
             <div className="w-20 shrink-0 pt-1.5">
               <p className="text-xs font-semibold">{r.label}</p>
               <p className="text-[10px] text-[var(--color-text-faint)] num">
-                {live != null ? `${live}s in force` : "—"}
+                {live != null ? `${live}${r.unit ?? "s"} in force` : "—"}
               </p>
             </div>
 
@@ -199,7 +207,7 @@ export function WorkerCadencePanel() {
                   className="field !w-28 num pr-6"
                 />
                 <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-[var(--color-text-faint)] pointer-events-none">
-                  s
+                  {r.unit ?? "s"}
                 </span>
               </div>
               {pending && (

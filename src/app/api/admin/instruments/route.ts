@@ -79,6 +79,30 @@ export async function POST(request: Request) {
     // Yahoo unreachable — still add it; the worker will fill in the name.
   }
 
+  // The cap is what the worker quotes, so adding past it produces a symbol
+  // that is listed and ordered but never priced. Refuse, and say which lever
+  // to pull -- an organiser adding a symbol deliberately is exactly who should
+  // decide whether to raise the cap or drop something else.
+  const [{ data: settings }, { count: tradable }] = await Promise.all([
+    guard.ctx.admin.from("game_settings").select("worker_max_symbols").eq("id", true).single(),
+    guard.ctx.admin.from("instruments").select("symbol", { count: "exact", head: true })
+      .eq("is_tradable", true),
+  ]);
+  const cap = settings?.worker_max_symbols ?? null;
+
+  const { data: existing } = await guard.ctx.admin
+    .from("instruments").select("symbol, is_tradable").eq("symbol", upper).maybeSingle();
+
+  // Re-enabling something already in the table is still a new slot unless it
+  // is already tradable.
+  if (cap != null && !existing?.is_tradable && (tradable ?? 0) >= cap) {
+    return NextResponse.json(
+      { error: `The universe is full at ${cap} symbols, and the worker only quotes that many. `
+             + `Raise the cap in Admin → Stock worker, or stop trading a symbol to make room.` },
+      { status: 409 },
+    );
+  }
+
   const { error } = await guard.ctx.admin.from("instruments").upsert(
     { symbol: upper, name, exchange, asset_type: assetType, is_tradable: true, is_halted: false },
     { onConflict: "symbol" },

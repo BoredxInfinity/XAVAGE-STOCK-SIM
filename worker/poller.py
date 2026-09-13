@@ -113,6 +113,11 @@ class Worker:
         self.history_run: dict[str, float] = {}
         self.last_settings_run = 0.0
         self._symbols: list[str] = []
+        # How many instruments to quote. Seeded from the environment,
+        # overridden by the control room on the first settings refresh --
+        # same contract as the cadences below.
+        self.max_symbols = cfg.max_symbols
+
         # The cadences in force, seconds. Seeded from the environment and
         # overridden by the control room; see refresh_settings().
         self.intervals = {
@@ -154,7 +159,7 @@ class Worker:
         rows, total = self.db.select(
             "instruments",
             {"select": "symbol", "is_tradable": "eq.true", "order": "symbol",
-             "limit": self.cfg.max_symbols},
+             "limit": self.max_symbols},
             count=True,
             label="universe",
         )
@@ -162,10 +167,10 @@ class Worker:
 
         if total is not None and total > len(self._symbols):
             log.warning(
-                "MAX_SYMBOLS=%d is truncating the universe: %d tradable "
-                "instruments, only %d quoted. Raise MAX_SYMBOLS or disable "
-                "instruments you don't need.",
-                self.cfg.max_symbols, total, len(self._symbols),
+                "The symbol cap of %d is truncating the universe: %d tradable "
+                "instruments, only %d quoted. Raise it in Admin -> Stock worker, "
+                "or stop trading instruments you don't need.",
+                self.max_symbols, total, len(self._symbols),
             )
 
         # The exchange clock decides the session; the only thing the app can
@@ -177,15 +182,53 @@ class Worker:
                 "game_settings",
                 {"select": "worker_mode_override,worker_live_interval,"
                            "worker_regular_interval,worker_idle_interval,"
-                           "worker_history_interval",
+                           "worker_history_interval,worker_max_symbols",
                  "id": "eq.true", "limit": 1},
                 label="game_settings",
             )
             row = settings[0] if settings else {}
             self._override = row.get("worker_mode_override") or None
             self.apply_cadence(row)
+            self.apply_symbol_cap(row)
         except PostgrestError as exc:
             log.warning("could not read worker settings, keeping the ones in force: %s", exc)
+
+    def running_to(self) -> dict:
+        """Everything the control room shows as "in force", in one shape.
+
+        Admin -> Stock worker reads the most recent startup-or-cadence line and
+        takes every field from it, so each of those lines has to carry the
+        whole picture -- otherwise changing one setting blanks the display of
+        the others.
+        """
+        return {
+            **{f"{k}_interval": v for k, v in self.intervals.items()},
+            "max_symbols": self.max_symbols,
+        }
+
+    def apply_symbol_cap(self, row: dict) -> None:
+        """Take the universe cap from the control room.
+
+        The app reads the same number to decide what participants may list,
+        search and trade (public.tradable_instruments), so the two must not
+        drift: a symbol this worker is not quoting must not be offered.
+        NULL means the organiser has no opinion and the environment stands.
+        """
+        wanted = row.get("worker_max_symbols") or self.cfg.max_symbols
+        if wanted == self.max_symbols:
+            return
+
+        log.info(
+            "symbol cap now %d (was %d) - in force from this cycle",
+            wanted, self.max_symbols,
+            extra={"event": "cadence", "cycle": self.cycle, "ship": True,
+                   "rss_mb": rss_mb(),
+                   "detail": {**self.running_to(), "max_symbols": wanted,
+                              "changed": {"max_symbols": {"from": self.max_symbols,
+                                                          "to": wanted}}}},
+        )
+        self.max_symbols = wanted
+        _shipper.flush()
 
     def apply_cadence(self, row: dict) -> None:
         """Take the cadences from the control room, and say so when they move.
@@ -216,6 +259,7 @@ class Worker:
             extra={"event": "cadence", "cycle": self.cycle, "ship": True,
                    "rss_mb": rss_mb(),
                    "detail": {**{f"{k}_interval": v for k, v in wanted.items()},
+                              "max_symbols": self.max_symbols,
                               "changed": {k: {"from": o, "to": n}
                                           for k, (o, n) in sorted(changed.items())}}},
         )
@@ -723,12 +767,12 @@ class Worker:
         log.info(
             "worker starting | %d symbols max | cadence %ss live / %ss regular / %ss idle | "
             "history every %ss | RAM %sMB (%sMB free), swap %sMB | logfile %s",
-            self.cfg.max_symbols, self.intervals["live"], self.intervals["regular"],
+            self.max_symbols, self.intervals["live"], self.intervals["regular"],
             self.intervals["idle"],
             self.intervals["history"], mem.get("MemTotal", "?"),
             mem.get("MemAvailable", "?"), mem.get("SwapTotal", "?"), _LOG_FILE or "none",
             extra={"event": "startup", "ship": True, "rss_mb": rss_mb(), "detail": {
-                **{f"{k}_interval": v for k, v in self.intervals.items()},
+                **self.running_to(),
                 "batch_size": self.cfg.batch_size,
                 "download_threads": self.cfg.download_threads,
                 "mem_total_mb": mem.get("MemTotal"),

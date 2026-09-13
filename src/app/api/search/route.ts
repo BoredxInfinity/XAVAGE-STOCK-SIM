@@ -35,11 +35,14 @@ export async function GET(request: Request) {
 
   const term = q.slice(0, 40);
 
+  // tradable_instruments, not instruments: past the symbol cap the worker
+  // quotes nothing, so offering the symbol here would be offering a price we
+  // do not have. Beyond the cap a symbol simply does not exist to participants.
   const { data: local } = await supabase
-    .from("instruments")
+    .from("tradable_instruments")
     .select("symbol, name, exchange, asset_type, is_tradable, is_halted")
     .or(`symbol.ilike.${term}%,name.ilike.%${term}%`)
-    .order("is_tradable", { ascending: false })
+    .order("symbol")
     .limit(12);
 
   const results: Hit[] = (local ?? []).map((r) => ({ ...r, source: "local" as const }));
@@ -47,7 +50,13 @@ export async function GET(request: Request) {
   // Exact-symbol match already found -> no need to reach out to Yahoo.
   const exact = results.some((r) => r.symbol === term.toUpperCase());
 
-  if (!exact && results.length < 8) {
+  // Room left in the universe. Resolving a symbol through Yahoo REGISTERS it,
+  // which is what makes the worker start quoting it -- so once the cap is
+  // reached, reaching out at all would only mint symbols nobody can be given
+  // a price for.
+  const capacity = await remainingCapacity();
+
+  if (!exact && results.length < 8 && capacity > 0) {
     try {
       const upstream = await fetch(
         `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(term)}&quotesCount=10&newsCount=0`,
@@ -72,6 +81,9 @@ export async function GET(request: Request) {
             asset_type: (h.quoteType ?? "EQUITY").toUpperCase(),
           }));
 
+        // Never register more than the universe has room for.
+        fresh.length = Math.min(fresh.length, capacity);
+
         if (fresh.length > 0) {
           // Register them so the worker begins quoting them. Requires service
           // role because `instruments` is read-only to clients under RLS.
@@ -92,4 +104,27 @@ export async function GET(request: Request) {
   }
 
   return NextResponse.json({ results: results.slice(0, 15) });
+}
+
+/**
+ * How many more instruments may be registered before the worker stops
+ * quoting them. Service role because `game_settings` is not readable by
+ * participants and the count must be of the whole table, not the capped view.
+ */
+async function remainingCapacity(): Promise<number> {
+  try {
+    const admin = createAdminClient();
+    const [{ data: settings }, { count }] = await Promise.all([
+      admin.from("game_settings").select("worker_max_symbols").eq("id", true).single(),
+      admin.from("instruments").select("symbol", { count: "exact", head: true })
+        .eq("is_tradable", true),
+    ]);
+    const cap = settings?.worker_max_symbols ?? null;
+    if (cap == null) return Number.MAX_SAFE_INTEGER;   // no opinion set -> worker's own default governs
+    return Math.max(0, cap - (count ?? 0));
+  } catch {
+    // Treat an unreadable setting as "no room" rather than risk minting
+    // symbols the worker will never quote.
+    return 0;
+  }
 }

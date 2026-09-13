@@ -23,10 +23,12 @@ export function MarketsView() {
     queryKey: ["instruments"],
     staleTime: 300_000,
     queryFn: async () => {
+      // The capped universe: what the worker is actually quoting. Listing a
+      // symbol the worker has truncated away would show a permanently blank
+      // price with no explanation.
       const { data, error } = await createClient()
-        .from("instruments")
+        .from("tradable_instruments")
         .select("symbol, name, sector, asset_type, is_tradable, is_halted")
-        .eq("is_tradable", true)
         .order("symbol")
         .limit(500);
       if (error) throw error;
