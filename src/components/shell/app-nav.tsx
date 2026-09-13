@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
-  BarChart3, CandlestickChart, ClipboardList, History,
+  CandlestickChart, ClipboardList, History,
   LayoutDashboard, LogOut, Menu, Shield, X,
 } from "lucide-react";
 import { Logo } from "@/components/logo";
@@ -13,7 +13,6 @@ import { cn } from "@/lib/format";
 const LINKS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/trade", label: "Trade", icon: CandlestickChart },
-  { href: "/portfolio", label: "Portfolio", icon: BarChart3 },
   { href: "/orders", label: "Orders", icon: ClipboardList },
   { href: "/history", label: "History", icon: History },
 ];
