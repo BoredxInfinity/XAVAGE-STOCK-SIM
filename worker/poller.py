@@ -664,7 +664,11 @@ class Worker:
                 d["enriched"] = self.enrich_profiles()
             self.last_profile_run = time.monotonic()
 
-        # Keep worker_logs to its 48h window. Hourly, and failure is not fatal.
+        # Retention, hourly, and failure is not fatal in either case. Bars are
+        # pruned here rather than on a cron for the same reason the logs are:
+        # the tables must not be able to grow without bound if the Vercel cron
+        # is ever removed. price_bars is the one that actually matters -- it
+        # grows ~40 MB per trading day and is most of the database.
         if time.monotonic() - self.last_prune > 3_600:
             self.last_prune = time.monotonic()
             try:
@@ -674,6 +678,14 @@ class Worker:
                              extra={"event": "logprune", "detail": {"removed": removed}})
             except PostgrestError as exc:
                 log.warning("prune_worker_logs failed: %s", exc)
+
+            try:
+                removed = self.db.rpc("prune_price_bars", {})
+                if removed:
+                    log.info("pruned %s expired price bar(s)", removed,
+                             extra={"event": "barprune", "detail": {"removed": removed}})
+            except PostgrestError as exc:
+                log.warning("prune_price_bars failed: %s", exc)
 
         fills = (matched or {}).get("filled") if isinstance(matched, dict) else None
         elapsed = time.monotonic() - started
