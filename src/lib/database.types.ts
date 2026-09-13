@@ -83,6 +83,21 @@ export type Quote = {
   updated_at: string;
 }
 
+/**
+ * The quote columns the UI actually renders.
+ *
+ * The reconcile poll in `MarketDataProvider` selects exactly these rather than
+ * `*`: with 200 clients re-seeding ~120 rows on a timer, the three columns
+ * nothing reads (`bid`, `ask`, `market_state`) are pure egress against a free
+ * tier that allows 5 GB a month. The worker's broadcast payload still carries
+ * whole `Quote` rows, which satisfies this by being a superset.
+ */
+export type LiveQuote = Pick<
+  Quote,
+  "symbol" | "price" | "prev_close" | "day_open" | "day_high" | "day_low"
+  | "volume" | "quote_time" | "updated_at"
+>;
+
 export type Order = {
   id: string;
   team_id: string;

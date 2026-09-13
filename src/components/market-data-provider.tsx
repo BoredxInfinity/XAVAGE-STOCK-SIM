@@ -4,9 +4,22 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase/client";
 import { quoteStore } from "@/lib/quote-store";
-import type { Quote } from "@/lib/database.types";
+import type { LiveQuote, Quote } from "@/lib/database.types";
 
 const PRICE_TOPIC = "xavage:prices";
+
+/** Only what the UI renders -- see the note on LiveQuote. */
+const QUOTE_COLUMNS =
+  "symbol,price,prev_close,day_open,day_high,day_low,volume,quote_time,updated_at";
+
+/**
+ * How often the reconcile poll runs. Broadcast is what actually delivers
+ * prices; this is the safety net for a slept tab or a dropped socket, and
+ * since it now fetches only rows newer than the last one seen, running it
+ * less often costs correctness nothing.
+ */
+const RECONCILE_MS = 300_000;
+const RECONCILE_FALLBACK_MS = 20_000;
 const USE_BROADCAST =
   (process.env.NEXT_PUBLIC_QUOTES_TRANSPORT ?? "broadcast") !== "postgres_changes";
 
@@ -35,15 +48,41 @@ export function MarketDataProvider({ children }: { children: React.ReactNode }) 
     const supabase = createClient();
     let cancelled = false;
     let fellBack = false;
+    let lastTickAt = 0;
 
     // Private channels authorise with the caller's JWT, so Realtime needs the
     // session token before subscribing. Without this the channel is refused
     // and prices silently never arrive.
     if (USE_BROADCAST) void supabase.realtime.setAuth();
 
-    async function seed() {
-      const { data } = await supabase.from("quotes").select("*");
-      if (data && !cancelled) quoteStore.upsertMany(data as Quote[]);
+    // The newest `updated_at` already in the store. The reconcile poll asks
+    // only for rows past it, so the steady-state poll returns an empty array
+    // instead of the whole quotes table.
+    //
+    // This is the difference between 37 KB and ~0 per client per poll. At four
+    // clients that was invisible; at 200 it was ~25 GB of egress over a
+    // competition, against a free-tier allowance of 5 GB a month.
+    let seenThrough: string | null = null;
+
+    async function seed({ full = false }: { full?: boolean } = {}) {
+      if (full) seenThrough = null;
+
+      let query = supabase.from("quotes").select(QUOTE_COLUMNS);
+      if (seenThrough) query = query.gt("updated_at", seenThrough);
+
+      const { data, error } = await query;
+      if (error || !data || cancelled) return;
+
+      const rows = data as unknown as LiveQuote[];
+      if (!rows.length) return;
+
+      quoteStore.upsertMany(rows);
+
+      // Advance the cursor from the server's own timestamps, never the local
+      // clock: a client whose clock runs fast would otherwise skip rows.
+      for (const row of rows) {
+        if (!seenThrough || row.updated_at > seenThrough) seenThrough = row.updated_at;
+      }
     }
     seed();
 
@@ -77,6 +116,9 @@ export function MarketDataProvider({ children }: { children: React.ReactNode }) 
         .on("broadcast", { event: "tick" }, (msg) => {
           const rows = (msg.payload as { quotes?: Quote[] } | undefined)?.quotes;
           if (Array.isArray(rows) && rows.length) quoteStore.upsertMany(rows);
+          // Proof the socket is delivering. The reconcile poll below skips a
+          // turn on the strength of it.
+          lastTickAt = Date.now();
         });
 
       ch.subscribe((status) => {
@@ -88,7 +130,7 @@ export function MarketDataProvider({ children }: { children: React.ReactNode }) 
           );
           supabase.removeChannel(ch);
           priceChannel = subscribeViaPostgresChanges();
-          seed();   // re-sync now: the fallback only carries changes from here on
+          seed({ full: true });   // re-sync now: the fallback only carries changes from here on
         }
       });
       return ch;
@@ -125,7 +167,20 @@ export function MarketDataProvider({ children }: { children: React.ReactNode }) 
     // that slept a tab or dropped the socket needs a periodic re-sync against
     // the source of truth. Slower than before because it is now a safety net
     // rather than the thing actually delivering prices.
-    const poll = setInterval(seed, USE_BROADCAST ? 60_000 : 20_000);
+    // A tick that arrived since the last turn is live proof the socket is
+    // healthy, and the worker's broadcast carries every symbol that moved --
+    // so there is nothing for a reconcile to find. Skipping the fetch in that
+    // case removes the poll almost entirely from market hours, which is
+    // exactly when it was most expensive (every client, every symbol that had
+    // changed). When the market is shut, or the socket has gone quiet, it runs
+    // and costs close to nothing because almost nothing has changed.
+    const poll = setInterval(
+      () => {
+        if (USE_BROADCAST && Date.now() - lastTickAt < RECONCILE_MS) return;
+        void seed();
+      },
+      USE_BROADCAST ? RECONCILE_MS : RECONCILE_FALLBACK_MS,
+    );
 
     // A hidden tab has its timers throttled to about once a minute and may
     // have missed broadcasts while the socket was re-establishing, so the poll
@@ -133,7 +188,7 @@ export function MarketDataProvider({ children }: { children: React.ReactNode }) 
     // looking at whatever the prices were when they left, for up to a minute,
     // with no way to tell. Re-sync the moment the page is looked at again.
     function onVisibility() {
-      if (document.visibilityState === "visible") seed();
+      if (document.visibilityState === "visible") seed();   // delta only, so this is nearly free
     }
     document.addEventListener("visibilitychange", onVisibility);
 

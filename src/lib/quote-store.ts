@@ -1,8 +1,8 @@
-import type { Quote } from "@/lib/database.types";
+import type { LiveQuote } from "@/lib/database.types";
 
 type Listener = () => void;
 
-export interface QuoteSnapshot extends Quote {
+export interface QuoteSnapshot extends LiveQuote {
   /** Direction of the most recent price change — drives the row flash. */
   tick: "up" | "down" | "flat";
 }
@@ -31,7 +31,7 @@ class QuoteStore {
     return [...this.quotes.values()];
   }
 
-  upsert(next: Quote) {
+  upsert(next: LiveQuote) {
     const prev = this.quotes.get(next.symbol);
     const price = Number(next.price);
 
@@ -46,7 +46,7 @@ class QuoteStore {
     this.global.forEach((fn) => fn());
   }
 
-  upsertMany(list: Quote[]) {
+  upsertMany(list: LiveQuote[]) {
     let changed = false;
     for (const q of list) {
       const prev = this.quotes.get(q.symbol);
