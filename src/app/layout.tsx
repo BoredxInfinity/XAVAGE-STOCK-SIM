@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
 import { Toaster } from "sonner";
 import { Providers } from "@/components/providers";
 import "./globals.css";
@@ -23,6 +24,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${inter.variable} ${mono.variable}`}>
       <body>
         <Providers>{children}</Providers>
+        {/* Vercel Web Analytics. Cookieless and no identifiers: it records the
+            path, and no route in this app carries a team or account id. Note
+            the middleware matcher below excludes /_vercel, or the beacon is
+            answered with a redirect to /login for anyone not signed in. */}
+        <Analytics />
         <Toaster
           theme="dark"
           position="bottom-right"

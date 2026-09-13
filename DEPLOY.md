@@ -107,6 +107,24 @@ Configuration → Site URL** and **Redirect URLs**.
 | `/api/cron/tick` | every minute | fallback prices + matching pass |
 | `/api/cron/settle` | 21:05 UTC, Mon–Fri | expire day orders, accrue interest, snapshot equity |
 
+### Web Analytics
+
+`<Analytics />` is already in the root layout, but it records nothing until the
+project is switched on: **Vercel → your project → Analytics → Enable**. Data
+starts arriving on the next deployment that receives traffic.
+
+Two things that are easy to get wrong here:
+
+- The middleware matcher excludes `_vercel` deliberately. Without it the
+  beacons — which post to `/_vercel/insights/view` — are answered with a
+  redirect to `/login` for anyone not signed in, so the login page records no
+  traffic at all, and every beacon from a signed-in participant costs a JWT
+  revalidation and a profile lookup.
+- Page views are recorded by route, and no route in this app carries a team or
+  account id, so nothing identifying leaves the browser. Keep it that way if
+  you add routes: a path like `/admin/teams/<uuid>` would put a team id into
+  the analytics dashboard.
+
 ### Cron schedules and the Hobby plan
 
 Hobby allows **at most 2 cron jobs, each running at most once per day**. A
