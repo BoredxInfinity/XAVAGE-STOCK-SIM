@@ -39,9 +39,43 @@ export function WorkerView() {
     },
   });
 
+  // The cadence the worker is actually running to, for the gear it is
+  // actually in -- straight from the line it logs when the gear changes, so
+  // the client does not have to re-derive mode_for() from the session.
+  const { data: gear } = useQuery({
+    queryKey: ["worker-gear"],
+    refetchInterval: 20_000,
+    queryFn: async () => {
+      const { data, error } = await createClient()
+        .from("worker_logs").select("ts, detail")
+        .eq("event", "mode").order("ts", { ascending: false }).limit(1);
+      if (error) throw error;
+      const detail = (data ?? [])[0]?.detail as
+        { to?: string; interval_s?: number } | null | undefined;
+      if (!detail) return null;
+      return {
+        mode: detail.to ?? null,
+        intervalSec: typeof detail.interval_s === "number" ? detail.interval_s : null,
+      };
+    },
+  });
+
   const lastTick = health?.state?.last_tick_at ?? status?.last_tick_at ?? null;
   const tickAgeSec = lastTick ? (now - new Date(lastTick).getTime()) / 1000 : null;
-  const feedHealthy = tickAgeSec != null && tickAgeSec < 120;
+
+  // Late means a whole cycle missed on top of the one in progress, plus the
+  // time a cycle takes. This was a flat 120s, which the cadence panel directly
+  // below actively invites an organiser to invalidate: at the default 120s
+  // regular cadence a cycle of 20-40s already puts ticks 140-160s apart, so a
+  // healthy worker read as stale, and anything slower read as stale always.
+  const staleAfterSec = gear?.intervalSec != null ? gear.intervalSec * 2 + 60 : 120;
+
+  // Idle is the exchange being shut, not the feed being broken: the worker
+  // makes no feed requests in that gear by design, so the tick age climbs
+  // forever and means nothing. Saying "stale" there trains organisers to
+  // ignore the one banner that has to be believed at 9:30.
+  const idle = gear?.mode === "idle";
+  const feedHealthy = idle || (tickAgeSec != null && tickAgeSec < staleAfterSec);
 
   return (
     <div className="space-y-4">
@@ -57,16 +91,22 @@ export function WorkerView() {
         !feedHealthy && "!border-[color-mix(in_oklab,var(--color-warn)_45%,transparent)]",
       )}>
         <div className="flex items-center gap-2">
-          {feedHealthy
-            ? <CheckCircle2 size={18} className="text-[var(--color-up)]" />
-            : <AlertTriangle size={18} className="text-[var(--color-warn)]" />}
+          {!feedHealthy
+            ? <AlertTriangle size={18} className="text-[var(--color-warn)]" />
+            : <CheckCircle2
+                size={18}
+                className={idle ? "text-[var(--color-text-faint)]" : "text-[var(--color-up)]"}
+              />}
           <div>
             <p className="text-xs font-semibold">
-              {feedHealthy ? "Price feed healthy" : "Price feed stale"}
+              {idle ? "Price feed idle" : feedHealthy ? "Price feed healthy" : "Price feed stale"}
             </p>
             <p className="text-[11px] text-[var(--color-text-faint)]">
               {lastTick ? `last tick ${relative(lastTick, now)}` : "no tick recorded yet"}
               {health?.state?.last_tick_source ? ` · ${health.state.last_tick_source}` : ""}
+              {idle
+                ? " · exchange shut, no feed requests"
+                : gear?.intervalSec != null ? ` · late after ${staleAfterSec}s` : ""}
             </p>
           </div>
         </div>

@@ -42,7 +42,7 @@ const ROWS: Row[] = [
   {
     key: "worker_idle_interval", reported: "idle_interval",
     label: "Idle", min: 15, max: 3600,
-    hint: "While the exchange is shut. No prices are fetched either way — this is only how often the worker says it is still alive, and the control room calls the feed stale after 120s.",
+    hint: "While the exchange is shut. No prices are fetched either way — this is only how often the worker says it is still alive, and the health line above reads idle rather than stale in this gear.",
   },
   {
     key: "worker_history_interval", reported: "history_interval",
@@ -58,6 +58,10 @@ export function WorkerCadencePanel() {
 
   const { data: settings } = useQuery({
     queryKey: ["game-settings"],
+    // Without this the panel shows what the settings were when the tab was
+    // opened: a cadence changed from another window, or by the reset button
+    // in another session, would not appear until a reload.
+    refetchInterval: 30_000,
     queryFn: async (): Promise<GameSettings> => {
       const { data, error } = await createClient()
         .from("game_settings").select("*").eq("id", true).single();
