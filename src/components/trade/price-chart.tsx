@@ -7,9 +7,11 @@ import {
 } from "lightweight-charts";
 import { Loader2 } from "lucide-react";
 import { useNow } from "@/hooks/use-now";
+import { useTheme } from "@/components/theme-provider";
+import { chartPalette } from "@/lib/chart-theme";
 import { nextWorkingBar, sameBar, type Bar } from "@/lib/working-bar";
 import { istCrosshair, istTickMark } from "@/lib/chart-time";
-import { cn } from "@/lib/format";
+import { Segmented } from "@/components/ui/segmented";
 
 const RANGES = ["1D", "5D", "1M"] as const;
 type Range = (typeof RANGES)[number];
@@ -42,6 +44,16 @@ export function PriceChart({
   const mainRef = useRef<ISeriesApi<"Area"> | ISeriesApi<"Candlestick"> | null>(null);
   const volRef = useRef<ISeriesApi<"Histogram"> | null>(null);
 
+  // The chart takes literal colour strings, so the palette has to be read at
+  // option time. A ref keeps the creation effect's dependency list empty --
+  // the chart instance must survive a theme flip (see the applyOptions effect
+  // below), because re-creating it would drop the viewer's pan/zoom and the
+  // live working bar with it.
+  const { theme } = useTheme();
+  const palette = chartPalette(theme);
+  const paletteRef = useRef(palette);
+  paletteRef.current = palette;
+
   const [range, setRange] = useState<Range>("1D");
   // Which range the bars currently in state were fetched for.
   const barsRange = useRef<Range | null>(null);
@@ -61,28 +73,29 @@ export function PriceChart({
   useEffect(() => {
     if (!holder.current) return;
 
+    const p = paletteRef.current;
     const chart = createChart(holder.current, {
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
-        textColor: "#9a9ab8",
+        textColor: p.text,
         fontFamily: "var(--font-mono), monospace",
         fontSize: 11,
         attributionLogo: false,
       },
       grid: {
-        vertLines: { color: "rgba(35,35,61,.45)" },
-        horzLines: { color: "rgba(35,35,61,.45)" },
+        vertLines: { color: p.grid },
+        horzLines: { color: p.grid },
       },
-      rightPriceScale: { borderColor: "#23233d", scaleMargins: { top: 0.12, bottom: 0.28 } },
+      rightPriceScale: { borderColor: p.border, scaleMargins: { top: 0.12, bottom: 0.28 } },
       localization: { timeFormatter: istCrosshair },
       timeScale: {
-        borderColor: "#23233d", timeVisible: true, secondsVisible: false,
+        borderColor: p.border, timeVisible: true, secondsVisible: false,
         tickMarkFormatter: istTickMark,
       },
       crosshair: {
         mode: 1,
-        vertLine: { color: "#4d8dff", width: 1, style: 2, labelBackgroundColor: "#1e5cf0" },
-        horzLine: { color: "#4d8dff", width: 1, style: 2, labelBackgroundColor: "#1e5cf0" },
+        vertLine: { color: p.crosshair, width: 1, style: 2, labelBackgroundColor: p.crosshairLabel },
+        horzLine: { color: p.crosshair, width: 1, style: 2, labelBackgroundColor: p.crosshairLabel },
       },
       handleScale: { axisPressedMouseMove: { time: true, price: false } },
       autoSize: true,
@@ -93,7 +106,7 @@ export function PriceChart({
     const volume = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
       priceScaleId: "vol",
-      color: "rgba(77,141,255,.32)",
+      color: paletteRef.current.volume,
     });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     volRef.current = volume;
@@ -125,26 +138,71 @@ export function PriceChart({
       mainRef.current = null;
     }
 
+    const p = paletteRef.current;
     mainRef.current =
       mode === "candles"
         ? chart.addSeries(CandlestickSeries, {
-            upColor: "#00e19b", downColor: "#ff3d6e",
-            wickUpColor: "#00e19b", wickDownColor: "#ff3d6e",
+            upColor: p.up, downColor: p.down,
+            wickUpColor: p.up, wickDownColor: p.down,
             borderVisible: false,
           })
         : chart.addSeries(AreaSeries, {
-            lineColor: "#4d8dff",
-            topColor: "rgba(77,141,255,.34)",
-            bottomColor: "rgba(168,85,247,.02)",
+            lineColor: p.neon,
+            topColor: p.areaTop,
+            bottomColor: p.areaBottom,
             lineWidth: 2,
             priceLineVisible: true,
-            priceLineColor: "#a855f7",
+            priceLineColor: p.violet,
           });
 
     if (bars.length > 0) applyBars(bars);
     // applyBars is stable for this effect's purposes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
+
+  /* ---- repaint on a theme flip, without rebuilding anything ---- */
+  //
+  // applyOptions only. Re-creating the chart or its series here would reset
+  // the time scale, drop `userMoved`, and wipe the synthetic working bar --
+  // i.e. flipping the theme would visibly break a live chart.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const p = paletteRef.current;
+
+    chart.applyOptions({
+      layout: { textColor: p.text },
+      grid: { vertLines: { color: p.grid }, horzLines: { color: p.grid } },
+      rightPriceScale: { borderColor: p.border },
+      timeScale: { borderColor: p.border },
+      crosshair: {
+        vertLine: { color: p.crosshair, labelBackgroundColor: p.crosshairLabel },
+        horzLine: { color: p.crosshair, labelBackgroundColor: p.crosshairLabel },
+      },
+    });
+
+    if (mainRef.current) {
+      mainRef.current.applyOptions(
+        mode === "candles"
+          ? { upColor: p.up, downColor: p.down, wickUpColor: p.up, wickDownColor: p.down }
+          : { lineColor: p.neon, topColor: p.areaTop, bottomColor: p.areaBottom, priceLineColor: p.violet },
+      );
+    }
+
+    // Volume colour is per-point, so applyOptions cannot reach it. Rewrite
+    // just that series' data -- the main series and lastWritten/plotted are
+    // deliberately left alone so the working bar keeps rolling.
+    if (volRef.current && bars.length > 0) {
+      volRef.current.setData(
+        bars.map((b) => ({
+          time: b.time as UTCTimestamp,
+          value: b.volume,
+          color: b.close >= b.open ? p.volumeUp : p.volumeDown,
+        })),
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [theme]);
 
   /* ---- push new data onto the EXISTING series ---- */
   //
@@ -189,7 +247,7 @@ export function PriceChart({
       list.map((b) => ({
         time: b.time as UTCTimestamp,
         value: b.volume,
-        color: b.close >= b.open ? "rgba(0,225,155,.28)" : "rgba(255,61,110,.28)",
+        color: b.close >= b.open ? paletteRef.current.volumeUp : paletteRef.current.volumeDown,
       })),
     );
 
@@ -305,38 +363,24 @@ export function PriceChart({
 
   return (
     <div className="flex flex-col">
-      <div className="flex items-center justify-between gap-2 px-1 pb-2">
-        <div className="flex gap-0.5">
-          {RANGES.map((r) => (
-            <button
-              key={r} onClick={() => setRange(r)}
-              className={cn(
-                "px-2 py-1 rounded-md text-[11px] font-semibold transition-colors",
-                range === r
-                  ? "bg-[color-mix(in_oklab,var(--color-neon)_18%,transparent)] text-[var(--color-neon-bright)]"
-                  : "text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)]",
-              )}
-            >
-              {r}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex gap-0.5">
-          {(["area", "candles"] as const).map((m) => (
-            <button
-              key={m} onClick={() => setMode(m)}
-              className={cn(
-                "px-2 py-1 rounded-md text-[11px] font-semibold capitalize transition-colors",
-                mode === m
-                  ? "bg-[color-mix(in_oklab,var(--color-violet)_18%,transparent)] text-[var(--color-violet)]"
-                  : "text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)]",
-              )}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
+      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-[var(--color-border-soft)]">
+        <Segmented
+          label="Chart range"
+          size="sm"
+          value={range}
+          onChange={setRange}
+          options={RANGES.map((r) => ({ value: r, label: r }))}
+        />
+        <Segmented
+          label="Chart type"
+          size="sm"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: "area" as const, label: "Area" },
+            { value: "candles" as const, label: "Candles" },
+          ]}
+        />
       </div>
 
       <div className="relative" style={{ height }}>

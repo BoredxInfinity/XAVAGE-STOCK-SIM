@@ -1,6 +1,7 @@
 import Image from "next/image";
 
-/** The XAVAGE XXVI mark, keyed off its black field so it sits on any surface. */
+/** The XAVAGE XXVI mark. The art is keyed to a black field, so in the light
+ *  theme `.logo-mark` (globals.css) multiplies the key out against paper. */
 export function Logo({ size = 32 }: { size?: number }) {
   return (
     <Image
@@ -10,7 +11,7 @@ export function Logo({ size = 32 }: { size?: number }) {
       width={size}
       height={size}
       priority
-      className="shrink-0 select-none"
+      className="logo-mark shrink-0 select-none"
     />
   );
 }

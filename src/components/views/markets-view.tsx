@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { Panel } from "@/components/ui/panel";
+import { PageHeader } from "@/components/ui/page-header";
 import { SymbolSearch } from "@/components/trade/symbol-search";
 import { createClient } from "@/lib/supabase/client";
 import { useQuotesVersion } from "@/hooks/use-quote";
@@ -72,18 +73,20 @@ export function MarketsView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instruments, version, sort, desc, filter]);
 
-  function header(key: SortKey, label: string, right = true) {
+  function header(key: SortKey, label: string, right = true, className?: string) {
     const active = sort === key;
     return (
-      <th className={right ? "r" : ""}>
+      <th className={cn(right && "r", className)}>
         <button
+          type="button"
+          data-active={active}
+          aria-sort={active ? (desc ? "descending" : "ascending") : "none"}
           onClick={() => { if (active) setDesc((d) => !d); else { setSort(key); setDesc(true); } }}
-          className={cn(
-            "inline-flex items-center gap-1 hover:text-[var(--color-text)] transition-colors",
-            active && "text-[var(--color-neon-bright)]",
-          )}
+          className="th-sort"
         >
           {label}
+          {/* The caret only appears on the active column, so the header row
+              stays quiet rather than sprouting four arrows. */}
           {active && (desc ? <ArrowDown size={10} /> : <ArrowUp size={10} />)}
         </button>
       </th>
@@ -92,17 +95,15 @@ export function MarketsView() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row gap-3 sm:items-center justify-between">
-        <div>
-          <h1 className="text-lg font-bold tracking-tight">Markets</h1>
-          <p className="text-xs text-[var(--color-text-dim)]">
-            {rows.length} live symbol{rows.length === 1 ? "" : "s"} · click any row to trade
-          </p>
-        </div>
-        <div className="w-full sm:w-80">
-          <SymbolSearch placeholder="Find any listed ticker…" />
-        </div>
-      </div>
+      <PageHeader
+        title="Markets"
+        subtitle={<>{rows.length} live symbol{rows.length === 1 ? "" : "s"} · click any row to trade</>}
+        action={
+          <div className="w-full sm:w-96">
+            <SymbolSearch placeholder="Find any listed ticker…" />
+          </div>
+        }
+      />
 
       <Panel
         title="Watchlist"
@@ -110,10 +111,11 @@ export function MarketsView() {
           <input
             value={filter} onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter…"
-            className="field !py-1 !text-xs !w-40"
+            aria-label="Filter the watchlist"
+            className="field w-44 py-1 text-[11px]"
           />
         }
-        bodyClassName="max-h-[calc(100dvh-260px)] overflow-y-auto"
+        bodyClassName="max-h-[calc(100dvh-250px)] overflow-y-auto overflow-x-auto"
       >
         <table className="tbl">
           <thead>
@@ -123,7 +125,7 @@ export function MarketsView() {
               {header("price", "Last")}
               {header("change", "Change")}
               <th className="r hidden md:table-cell">Day range</th>
-              {header("volume", "Volume")}
+              {header("volume", "Volume", true, "hidden sm:table-cell")}
             </tr>
           </thead>
           <tbody>
@@ -151,21 +153,20 @@ export function MarketsView() {
                 <td className="hidden lg:table-cell text-[11px] text-[var(--color-text-dim)]">
                   {r.sector ?? "—"}
                 </td>
-                <td className="r num font-medium">{num(r.price)}</td>
-                <td className={cn("r num",
+                <td className="r num font-semibold whitespace-nowrap">{num(r.price)}</td>
+                <td className={cn("r num whitespace-nowrap",
                   r.change > 0 ? "text-[var(--color-up)]"
                     : r.change < 0 ? "text-[var(--color-down)]"
                     : "text-[var(--color-text-dim)]")}>
-                  {pct(r.changePct)}
-                  <span className="block text-[10px]">
+                  <span className="font-medium">{pct(r.changePct)}</span>
+                  <span className="block text-[10px] opacity-75">
                     {r.change >= 0 ? "+" : "−"}{num(Math.abs(r.change))}
                   </span>
                 </td>
-                <td className="r num hidden md:table-cell text-[11px] text-[var(--color-text-dim)]">
-                  {r.day_low != null && r.day_high != null
-                    ? `${num(Number(r.day_low))} – ${num(Number(r.day_high))}` : "—"}
+                <td className="hidden md:table-cell">
+                  <DayRange low={r.day_low} high={r.day_high} last={r.price} />
                 </td>
-                <td className="r num text-[11px] text-[var(--color-text-dim)]">
+                <td className="r num text-[11px] text-[var(--color-text-dim)] hidden sm:table-cell">
                   {compactNum(r.volume)}
                 </td>
               </tr>
@@ -173,6 +174,36 @@ export function MarketsView() {
           </tbody>
         </table>
       </Panel>
+    </div>
+  );
+}
+
+/**
+ * The day's low–high with a marker showing where the last print sits inside
+ * it. The numbers are unchanged; the bar just makes "near the high" readable
+ * at a glance instead of requiring mental arithmetic per row.
+ */
+function DayRange({
+  low, high, last,
+}: { low: number | string | null; high: number | string | null; last: number }) {
+  if (low == null || high == null) {
+    return <span className="num text-[11px] text-[var(--color-text-dim)] block text-right">—</span>;
+  }
+  const lo = Number(low), hi = Number(high);
+  const span = hi - lo;
+  const at = span > 0 ? Math.min(100, Math.max(0, ((last - lo) / span) * 100)) : 50;
+
+  return (
+    <div className="min-w-[104px]">
+      <div className="flex justify-between num text-[10px] text-[var(--color-text-dim)]">
+        <span>{num(lo)}</span><span>{num(hi)}</span>
+      </div>
+      <div className="relative h-1 mt-1 rounded-full bg-[var(--color-surface-2)]">
+        <span
+          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-1 h-2.5 rounded-full bg-[var(--color-neon)]"
+          style={{ left: `${at}%` }}
+        />
+      </div>
     </div>
   );
 }

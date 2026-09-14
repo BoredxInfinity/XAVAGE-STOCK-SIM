@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Download } from "lucide-react";
 import { Panel } from "@/components/ui/panel";
+import { PageHeader } from "@/components/ui/page-header";
 import { StatTile } from "@/components/ui/stat-tile";
 import { TradesTable } from "@/components/tables/trades-table";
 import { useTrades } from "@/hooks/use-app-data";
@@ -54,37 +55,42 @@ export function HistoryView() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-bold tracking-tight">Trade history</h1>
-          <p className="text-xs text-[var(--color-text-dim)]">
-            Every fill on your team&apos;s book, newest first.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <input
-            value={filter} onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter by symbol…" className="field !py-1.5 !text-xs !w-44"
-          />
-          <button onClick={exportCsv} disabled={visible.length === 0} className="btn btn-ghost !py-1.5">
-            <Download size={14} /> CSV
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title="Trade history"
+        subtitle="Every fill on your team's book, newest first."
+      />
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         {/* `visible`, not `trades`: the tiles sit directly above the filtered
             table, so counting everything made "Fills: 500" head a 12-row list. */}
-        <StatTile label="Fills" value={visible.length} />
-        <StatTile label="Realised P&L" tone={toneOf(stats.realized)} value={signedMoney(stats.realized)} />
-        <StatTile label="Win rate"
+        <StatTile size="sm" accent="neon" label="Fills" value={visible.length} />
+        <StatTile size="sm" label="Realised P&L" tone={toneOf(stats.realized)} value={signedMoney(stats.realized)} />
+        <StatTile size="sm" label="Win rate"
                   value={stats.winRate == null ? "—" : `${stats.winRate.toFixed(0)}%`}
                   sub={`${stats.closers} closing trade${stats.closers === 1 ? "" : "s"}`} />
-        <StatTile label="Fees paid" value={money(stats.fees)} />
-        <StatTile label="Traded volume" value={money(stats.volume, true)} />
+        <StatTile size="sm" label="Fees paid" value={money(stats.fees)} />
+        <StatTile size="sm" label="Traded volume" value={money(stats.volume, true)} />
       </div>
 
-      <Panel>
+      {/* Filter and export belong with the blotter they act on, not floating
+          above the summary tiles. */}
+      <Panel
+        title="Fills"
+        action={
+          <>
+            <input
+              value={filter} onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter by symbol…"
+              aria-label="Filter fills by symbol"
+              className="field w-44 py-1 text-[11px]"
+            />
+            <button onClick={exportCsv} disabled={visible.length === 0} className="btn btn-ghost py-1 text-[11px]">
+              <Download size={13} /> CSV
+            </button>
+          </>
+        }
+        bodyClassName="overflow-x-auto"
+      >
         {isLoading ? <div className="h-64 skeleton" /> : <TradesTable trades={visible} />}
       </Panel>
     </div>

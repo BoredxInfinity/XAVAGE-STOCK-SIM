@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { KeyRound, ShieldQuestion } from "lucide-react";
 import { ChangePasswordForm } from "@/components/auth/change-password-form";
 import { Logo } from "@/components/logo";
+import { ThemeToggle } from "@/components/shell/theme-toggle";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata = { title: "Change your password" };
@@ -20,6 +21,10 @@ export default async function ChangePasswordPage() {
 
   return (
     <main className="min-h-dvh grid place-items-center px-4 py-10">
+      <div className="fixed top-4 right-4 z-10">
+        <ThemeToggle />
+      </div>
+
       <div className="w-full max-w-[420px]">
         <div className="flex flex-col items-center gap-3 mb-8">
           <Logo size={40} />

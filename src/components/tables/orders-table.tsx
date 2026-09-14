@@ -87,7 +87,7 @@ export function OrdersTable({
               </td>
               <td>
                 <Link href={`/trade/${o.symbol}`}
-                      className="num text-xs font-bold text-[var(--color-neon-bright)] hover:underline">
+                      className="num text-[12.5px] font-bold tracking-wide text-[var(--color-neon-bright)] hover:underline">
                   {o.symbol}
                 </Link>
               </td>
@@ -102,14 +102,14 @@ export function OrdersTable({
                   {TIF_LABEL[o.tif]}
                 </span>
               </td>
-              <td className="r num">{qtyText(o.qty)}</td>
-              <td className="r num hidden md:table-cell text-[var(--color-text-dim)]">
+              <td className="r num font-medium whitespace-nowrap">{qtyText(o.qty)}</td>
+              <td className="r num hidden md:table-cell text-[var(--color-text-dim)] whitespace-nowrap">
                 {qtyText(o.filled_qty)}
               </td>
               <td className="hidden lg:table-cell num text-[11px] text-[var(--color-text-dim)] whitespace-nowrap">
                 {triggerText(o)}
               </td>
-              <td className="r num hidden lg:table-cell">
+              <td className="r num hidden lg:table-cell whitespace-nowrap">
                 {o.avg_fill_price ? money(o.avg_fill_price) : "—"}
               </td>
               <td>
@@ -126,7 +126,7 @@ export function OrdersTable({
                   {isWorking(o.status) && (
                     <button
                       onClick={() => cancel(o.id)} disabled={cancelling === o.id}
-                      className="btn btn-danger !px-2 !py-1 !text-[11px]"
+                      className="btn btn-danger px-2 py-1 text-[11px]"
                       aria-label={`Cancel ${o.side} order for ${o.symbol}`}
                     >
                       {cancelling === o.id

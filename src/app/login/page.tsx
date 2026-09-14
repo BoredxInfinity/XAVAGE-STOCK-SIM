@@ -1,12 +1,18 @@
 import { Suspense } from "react";
 import { LoginForm } from "@/components/auth/login-form";
 import { Logo } from "@/components/logo";
+import { ThemeToggle } from "@/components/shell/theme-toggle";
 
 export const metadata = { title: "Sign in" };
 
 export default function LoginPage() {
   return (
     <main className="min-h-dvh grid place-items-center px-4 py-10">
+      {/* These pages render outside the app shell, so the toggle floats. */}
+      <div className="fixed top-4 right-4 z-10">
+        <ThemeToggle />
+      </div>
+
       <div className="w-full max-w-[400px]">
         <div className="flex flex-col items-center gap-3 mb-8">
           <Logo size={44} />

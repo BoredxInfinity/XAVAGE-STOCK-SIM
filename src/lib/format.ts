@@ -1,5 +1,11 @@
-export function cn(...parts: Array<string | false | null | undefined>) {
-  return parts.filter(Boolean).join(" ");
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+/** Conditional classes with Tailwind conflict resolution: a later class wins
+ *  over an earlier one in the same group, so call sites can override a
+ *  component's defaults without reaching for `!important`. */
+export function cn(...parts: ClassValue[]) {
+  return twMerge(clsx(parts));
 }
 
 const usd = new Intl.NumberFormat("en-US", {

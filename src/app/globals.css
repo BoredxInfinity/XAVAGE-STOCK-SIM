@@ -4,19 +4,32 @@
    XAVAGE :: design tokens
    Terminal-grade density with a neon blue/violet signature.
    Numbers are always tabular so columns of prices align optically.
+
+   Two themes. The whole palette is plain custom properties on :root, with
+   :root[data-theme="light"] redefining them -- see the note above @theme
+   below for why the colours are deliberately not declared there.
+
+   Because every component reads colour as var(--color-*), swapping the
+   data-theme attribute repaints the entire app with no component change.
    ===================================================================== */
-@theme {
+
+/* ------------------------------------------------------- dark (default) */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
   --color-bg:         #06060c;
   --color-bg-elev:    #0b0b14;
   --color-surface:    #0f0f1b;
   --color-surface-2:  #16162a;
   --color-surface-3:  #1d1d35;
-  --color-border:     #23233d;
-  --color-border-soft:#1a1a2e;
+  --color-surface-hover: color-mix(in oklab, var(--color-neon) 6%, transparent);
+  --color-border:     #2a2a47;
+  --color-border-soft:#1d1d33;
 
-  --color-text:       #e8e9f3;
-  --color-text-dim:   #9a9ab8;
-  --color-text-faint: #61618a;
+  --color-text:       #edeef7;
+  --color-text-dim:   #a6a7c4;
+  --color-text-faint: #6e6e99;
 
   --color-neon:       #4d8dff;   /* primary neon blue  */
   --color-neon-bright:#6ea8ff;
@@ -31,15 +44,95 @@
   --color-down-dim:   #8c1b3a;
   --color-warn:       #fbbf24;
 
+  /* buy/sell button gradients, per theme so they stay legible on paper */
+  --buy-from:   #059669;
+  --buy-to:     #00c98b;
+  --buy-ink:    #04150f;
+  --sell-from:  #e11d48;
+  --sell-to:    #ff5d80;
+  --sell-ink:   #ffffff;
+
+  /* In the dark theme the 1px borders carry the elevation; shadows are
+     nearly invisible on a near-black ground, so they stay minimal. */
+  --shadow-panel: 0 1px 2px rgb(0 0 0 / .35);
+  --shadow-pop:   0 18px 48px -18px rgb(0 0 0 / .8);
+
+  --ambient-neon:   13%;
+  --ambient-violet: 11%;
+  --flash-strength: 26%;
+  --glow-edge-neon:   55%;
+  --glow-edge-violet: 45%;
+}
+
+/* ----------------------------------------------------------------- light */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --color-bg:         #f4f5fa;
+  --color-bg-elev:    #ffffff;
+  --color-surface:    #ffffff;
+  --color-surface-2:  #f1f2f8;
+  --color-surface-3:  #e4e6f0;
+  --color-surface-hover: color-mix(in oklab, var(--color-neon) 7%, transparent);
+  --color-border:     #d9dcea;
+  --color-border-soft:#e8eaf3;
+
+  --color-text:       #10121f;
+  --color-text-dim:   #55597a;
+  --color-text-faint: #8388a6;
+
+  /* The accents darken so they hold contrast against paper while staying
+     recognisably the same blue/violet as the logo. */
+  --color-neon:       #2563eb;
+  --color-neon-bright:#1d4ed8;
+  --color-neon-deep:  #1e40af;
+  --color-violet:     #7c3aed;
+  --color-violet-deep:#6d28d9;
+  --color-cyan:       #0891b2;
+
+  /* #00e19b / #ff3d6e are unreadable on white -- these are the same hues
+     taken down to an accessible luminance. */
+  --color-up:         #00875a;
+  --color-up-dim:     #b7e4d2;
+  --color-down:       #d1204a;
+  --color-down-dim:   #f6c8d3;
+  --color-warn:       #b45309;
+
+  --buy-from:   #047857;
+  --buy-to:     #059669;
+  --buy-ink:    #ffffff;
+  --sell-from:  #be123c;
+  --sell-to:    #e11d48;
+  --sell-ink:   #ffffff;
+
+  /* On paper a hairline border alone reads flat, so panels get real
+     (but very soft) elevation instead. */
+  --shadow-panel: 0 1px 2px rgb(16 18 31 / .04), 0 4px 14px -8px rgb(16 18 31 / .14);
+  --shadow-pop:   0 20px 50px -20px rgb(16 18 31 / .28);
+
+  --ambient-neon:   5%;
+  --ambient-violet: 4%;
+  --flash-strength: 18%;
+  --glow-edge-neon:   42%;
+  --glow-edge-violet: 34%;
+}
+
+/* Only the non-colour scales go through @theme. The palette deliberately does
+   NOT: `@theme` would pin one set of values in :root and defeat the light
+   override, and `@theme inline` emits no custom properties at all -- it only
+   inlines them into generated utilities, leaving every `var(--color-*)` in
+   this file and in the components undefined. Nothing in src/ uses a
+   token-named utility (bg-neon, text-text-dim, ...) -- colour is always read
+   as var(--color-*) -- so there is nothing to generate. */
+@theme {
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: var(--font-mono-jb), ui-monospace, "SF Mono", Menlo, monospace;
 
-  --radius-panel: 14px;
+  --radius-sm:    8px;
+  --radius-panel: 12px;
 }
 
 /* ---------------------------------------------------------------- base */
-:root { color-scheme: dark; }
-
 html, body {
   background: var(--color-bg);
   color: var(--color-text);
@@ -48,12 +141,20 @@ html, body {
 }
 
 body {
-  /* two faint neon pools -- the only ambient colour in the shell */
+  /* two faint neon pools -- the only ambient colour in the shell. The
+     strength is a token so light mode reads as a tint, not a stain. */
   background-image:
-    radial-gradient(900px 500px at 12% -8%,  color-mix(in oklab, var(--color-neon) 13%, transparent), transparent 70%),
-    radial-gradient(800px 500px at 92% 4%,   color-mix(in oklab, var(--color-violet) 11%, transparent), transparent 70%);
+    radial-gradient(900px 500px at 12% -8%,  color-mix(in oklab, var(--color-neon) var(--ambient-neon), transparent), transparent 70%),
+    radial-gradient(800px 500px at 92% 4%,   color-mix(in oklab, var(--color-violet) var(--ambient-violet), transparent), transparent 70%);
   background-attachment: fixed;
   min-height: 100dvh;
+}
+
+/* Theme flips should not animate every panel on the page at once. */
+:root.theme-switching *,
+:root.theme-switching *::before,
+:root.theme-switching *::after {
+  transition: none !important;
 }
 
 /* every numeric readout: monospaced + tabular so digits never jitter */
@@ -66,19 +167,20 @@ body {
 
 /* ------------------------------------------------------------ surfaces */
 .panel {
-  background: color-mix(in oklab, var(--color-surface) 88%, transparent);
+  background: var(--color-surface);
   border: 1px solid var(--color-border-soft);
   border-radius: var(--radius-panel);
-  backdrop-filter: blur(12px);
+  box-shadow: var(--shadow-panel);
 }
 
 .panel-glow {
   position: relative;
   background: linear-gradient(160deg,
-    color-mix(in oklab, var(--color-surface-2) 92%, transparent),
-    color-mix(in oklab, var(--color-surface) 92%, transparent));
+    color-mix(in oklab, var(--color-surface-2) 55%, var(--color-surface)),
+    var(--color-surface));
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-panel);
 }
 /* 1px gradient hairline along the top edge of hero panels */
 .panel-glow::before {
@@ -87,13 +189,23 @@ body {
   border-radius: inherit;
   padding: 1px;
   background: linear-gradient(120deg,
-    color-mix(in oklab, var(--color-neon) 55%, transparent),
+    color-mix(in oklab, var(--color-neon) var(--glow-edge-neon), transparent),
     transparent 42%, transparent 60%,
-    color-mix(in oklab, var(--color-violet) 45%, transparent));
+    color-mix(in oklab, var(--color-violet) var(--glow-edge-violet), transparent));
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
           mask-composite: exclude;
   pointer-events: none;
+}
+
+/* A hairline rule that carries the brand gradient -- used to band sections
+   without adding another box. */
+.accent-rule {
+  height: 1px;
+  background: linear-gradient(90deg,
+    color-mix(in oklab, var(--color-neon) 70%, transparent),
+    color-mix(in oklab, var(--color-violet) 55%, transparent),
+    transparent 92%);
 }
 
 .neon-text {
@@ -108,11 +220,22 @@ body {
 .violet-ring { box-shadow: 0 0 0 1px color-mix(in oklab, var(--color-violet) 45%, transparent),
                            0 0 22px -6px color-mix(in oklab, var(--color-violet) 60%, transparent); }
 
+/* The logo mark is a PNG keyed to a black field, and the art is a neon glow:
+   blending the key out against paper leaves it washed and weak. Instead the
+   mark keeps the dark field it was drawn for, as a small tile -- which reads
+   as a deliberate lockup rather than a stray dark rectangle. */
+:root[data-theme="light"] .logo-mark {
+  background: #06060c;
+  border-radius: 7px;
+  padding: 3px;
+  box-shadow: 0 1px 3px rgb(16 18 31 / .18);
+}
+
 /* --------------------------------------------------------- price flash */
 /* A fill or tick briefly washes the row so changes are impossible to miss. */
-@keyframes flash-up   { 0% { background-color: color-mix(in oklab, var(--color-up) 26%, transparent); }
+@keyframes flash-up   { 0% { background-color: color-mix(in oklab, var(--color-up) var(--flash-strength), transparent); }
                       100% { background-color: transparent; } }
-@keyframes flash-down { 0% { background-color: color-mix(in oklab, var(--color-down) 26%, transparent); }
+@keyframes flash-down { 0% { background-color: color-mix(in oklab, var(--color-down) var(--flash-strength), transparent); }
                       100% { background-color: transparent; } }
 /* Two class names per direction, identical keyframes. The alternation is what
    restarts the animation on a repeated tick -- see flashClass() in
@@ -142,8 +265,8 @@ body {
 /* ------------------------------------------------------------ controls */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
-  border-radius: 10px; font-weight: 600; font-size: .875rem;
-  padding: .55rem 1rem; transition: all .15s ease;
+  border-radius: var(--radius-sm); font-weight: 600; font-size: .8125rem;
+  padding: .5rem .95rem; transition: all .15s ease;
   border: 1px solid transparent; cursor: pointer; white-space: nowrap;
 }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
@@ -155,34 +278,46 @@ body {
 }
 .btn-primary:hover:not(:disabled) { filter: brightness(1.14); }
 
-.btn-buy  { background: linear-gradient(120deg, #059669, #00c98b); color: #04150f;
+.btn-buy  { background: linear-gradient(120deg, var(--buy-from), var(--buy-to)); color: var(--buy-ink);
             box-shadow: 0 6px 22px -10px var(--color-up); }
-.btn-sell { background: linear-gradient(120deg, #e11d48, #ff5d80); color: #fff;
+.btn-sell { background: linear-gradient(120deg, var(--sell-from), var(--sell-to)); color: var(--sell-ink);
             box-shadow: 0 6px 22px -10px var(--color-down); }
 .btn-buy:hover:not(:disabled), .btn-sell:hover:not(:disabled) { filter: brightness(1.12); }
 
 .btn-ghost {
-  background: color-mix(in oklab, var(--color-surface-2) 70%, transparent);
+  background: var(--color-surface-2);
   border-color: var(--color-border);
   color: var(--color-text-dim);
 }
 .btn-ghost:hover:not(:disabled) { color: var(--color-text); border-color: var(--color-neon); }
 
 .btn-danger {
-  background: color-mix(in oklab, var(--color-down) 14%, transparent);
-  border-color: color-mix(in oklab, var(--color-down) 42%, transparent);
+  background: color-mix(in oklab, var(--color-down) 12%, transparent);
+  border-color: color-mix(in oklab, var(--color-down) 38%, transparent);
   color: var(--color-down);
 }
-.btn-danger:hover:not(:disabled) { background: color-mix(in oklab, var(--color-down) 24%, transparent); }
+.btn-danger:hover:not(:disabled) { background: color-mix(in oklab, var(--color-down) 20%, transparent); }
+
+/* A bare icon button -- nav, toggles, row actions. */
+.btn-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 2rem; height: 2rem; border-radius: var(--radius-sm);
+  color: var(--color-text-faint);
+  border: 1px solid transparent;
+  transition: color .15s ease, background-color .15s ease, border-color .15s ease;
+  cursor: pointer;
+}
+.btn-icon:hover { color: var(--color-text); background: var(--color-surface-2); border-color: var(--color-border); }
+.btn-icon-danger:hover { color: var(--color-down); border-color: color-mix(in oklab, var(--color-down) 35%, transparent); }
 
 .field {
   width: 100%;
   background: var(--color-bg-elev);
   border: 1px solid var(--color-border);
-  border-radius: 10px;
-  padding: .55rem .75rem;
+  border-radius: var(--radius-sm);
+  padding: .5rem .7rem;
   color: var(--color-text);
-  font-size: .875rem;
+  font-size: .8125rem;
   transition: border-color .15s ease, box-shadow .15s ease;
 }
 .field:focus {
@@ -196,17 +331,43 @@ select.field  { appearance: none; background-image: none; }
 select.field option { background: var(--color-surface-2); color: var(--color-text); }
 
 .label {
-  display: block; font-size: .6875rem; font-weight: 600;
-  text-transform: uppercase; letter-spacing: .07em;
+  display: block; font-size: .625rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .08em;
   color: var(--color-text-faint); margin-bottom: .3rem;
+}
+
+/* ------------------------------------------------------ segmented control */
+/* One shared pattern for the order tabs, chart ranges and chart type. */
+.seg {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 2px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-sm);
+}
+.seg-item {
+  display: inline-flex; align-items: center; gap: .35rem;
+  padding: .3rem .6rem;
+  border-radius: calc(var(--radius-sm) - 3px);
+  font-size: .75rem; font-weight: 600;
+  color: var(--color-text-dim);
+  white-space: nowrap; cursor: pointer;
+  transition: color .15s ease, background-color .15s ease;
+}
+.seg-item:hover { color: var(--color-text); }
+.seg-item[aria-selected="true"] {
+  background: var(--color-bg-elev);
+  color: var(--color-text);
+  box-shadow: 0 1px 2px rgb(0 0 0 / .18), inset 0 0 0 1px color-mix(in oklab, var(--color-neon) 30%, transparent);
 }
 
 /* --------------------------------------------------------------- chips */
 .chip {
   display: inline-flex; align-items: center; gap: .3rem;
-  font-size: .6875rem; font-weight: 600; padding: .18rem .5rem;
+  font-size: .625rem; font-weight: 600; padding: .15rem .45rem;
   border-radius: 999px; border: 1px solid transparent;
-  text-transform: uppercase; letter-spacing: .05em;
+  text-transform: uppercase; letter-spacing: .06em;
+  white-space: nowrap;
 }
 .chip-up      { background: color-mix(in oklab, var(--color-up) 14%, transparent);
                 border-color: color-mix(in oklab, var(--color-up) 32%, transparent); color: var(--color-up); }
@@ -221,21 +382,34 @@ select.field option { background: var(--color-surface-2); color: var(--color-tex
                 border-color: color-mix(in oklab, var(--color-warn) 34%, transparent); color: var(--color-warn); }
 
 /* -------------------------------------------------------------- tables */
+/* Dense by design: a participant should be able to read a whole blotter
+   without scrolling. Headers recede, numbers do the talking. */
 .tbl { width: 100%; border-collapse: separate; border-spacing: 0; }
 .tbl thead th {
   position: sticky; top: 0; z-index: 1;
   background: var(--color-bg-elev);
-  font-size: .6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+  font-size: .625rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em;
   color: var(--color-text-faint);
-  padding: .55rem .75rem; text-align: left;
+  padding: .45rem .7rem; text-align: left;
   border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
 }
 .tbl tbody td {
-  padding: .6rem .75rem; font-size: .8125rem;
+  padding: .45rem .7rem; font-size: .8125rem;
   border-bottom: 1px solid var(--color-border-soft);
 }
-.tbl tbody tr:hover td { background: color-mix(in oklab, var(--color-neon) 5%, transparent); }
+.tbl tbody tr:last-child td { border-bottom: none; }
+.tbl tbody tr:hover td { background: var(--color-surface-hover); }
 .tbl .r { text-align: right; }
+
+/* A sortable header behaves like a button but keeps the header's type. */
+.th-sort {
+  display: inline-flex; align-items: center; gap: .25rem;
+  color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit;
+  cursor: pointer; background: none; border: 0; padding: 0;
+}
+.th-sort:hover { color: var(--color-text-dim); }
+.th-sort[data-active="true"] { color: var(--color-neon-bright); }
 
 /* ------------------------------------------------------------ scrollbar */
 ::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -253,3 +427,9 @@ select.field option { background: var(--color-surface-2); color: var(--color-tex
 /* horizontal tape: scrollable but chromeless */
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* the tape fades into the bar edges rather than being cut off by them */
+.edge-fade {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+}

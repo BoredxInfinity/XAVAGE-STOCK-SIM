@@ -25,7 +25,7 @@ function PositionRow({ position }: { position: PortfolioPosition }) {
     <tr className={flashClass(live)}>
       <td>
         <Link href={`/trade/${position.symbol}`} className="group flex flex-col">
-          <span className="num text-xs font-bold text-[var(--color-neon-bright)] group-hover:underline">
+          <span className="num text-[12.5px] font-bold tracking-wide text-[var(--color-neon-bright)] group-hover:underline">
             {position.symbol}
           </span>
           <span className="text-[10.5px] text-[var(--color-text-faint)] truncate max-w-[150px]">
@@ -33,7 +33,7 @@ function PositionRow({ position }: { position: PortfolioPosition }) {
           </span>
         </Link>
       </td>
-      <td className="r num">
+      <td className="r num whitespace-nowrap">
         <span className={isShort ? "text-[var(--color-down)]" : ""}>{qtyText(position.qty)}</span>
         {isShort && <span className="ml-1 chip chip-down">Short</span>}
         {position.reserved_qty > 0 && (
@@ -42,15 +42,15 @@ function PositionRow({ position }: { position: PortfolioPosition }) {
           </span>
         )}
       </td>
-      <td className="r num text-[var(--color-text-dim)]">{money(position.avg_cost)}</td>
-      <td className="r num">{money(price)}</td>
-      <td className="r num">{money(marketValue)}</td>
-      <td className="r num text-[var(--color-text-dim)] hidden lg:table-cell">{money(costBasis)}</td>
-      <td className={cn("r num font-semibold", toneClass(unrealized))}>
+      <td className="r num text-[var(--color-text-dim)] whitespace-nowrap">{money(position.avg_cost)}</td>
+      <td className="r num whitespace-nowrap">{money(price)}</td>
+      <td className="r num font-medium whitespace-nowrap">{money(marketValue)}</td>
+      <td className="r num text-[var(--color-text-dim)] hidden lg:table-cell whitespace-nowrap">{money(costBasis)}</td>
+      <td className={cn("r num font-semibold whitespace-nowrap", toneClass(unrealized))}>
         {signedMoney(unrealized)}
-        <span className="block text-[10px] font-normal">{pct(unrealizedPct)}</span>
+        <span className="block text-[10px] font-normal opacity-80">{pct(unrealizedPct)}</span>
       </td>
-      <td className={cn("r num hidden md:table-cell", toneClass(position.realized_pnl))}>
+      <td className={cn("r num hidden md:table-cell whitespace-nowrap", toneClass(position.realized_pnl))}>
         {position.realized_pnl !== 0 ? signedMoney(position.realized_pnl) : "—"}
       </td>
     </tr>

@@ -2,9 +2,11 @@
 
 import { useMemo, useState } from "react";
 import { Panel } from "@/components/ui/panel";
+import { PageHeader } from "@/components/ui/page-header";
+import { Segmented } from "@/components/ui/segmented";
 import { OrdersTable } from "@/components/tables/orders-table";
 import { useOrders } from "@/hooks/use-app-data";
-import { cn, isWorking } from "@/lib/format";
+import { isWorking } from "@/lib/format";
 
 const TABS = [
   { id: "working", label: "Working" },
@@ -37,31 +39,21 @@ export function OrdersView() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-lg font-bold tracking-tight">Orders</h1>
-        <p className="text-xs text-[var(--color-text-dim)]">
-          Pending, executed and cancelled orders for your team&apos;s book.
-        </p>
-      </div>
+      <PageHeader
+        title="Orders"
+        subtitle="Pending, executed and cancelled orders for your team's book."
+        action={
+          <Segmented
+            label="Order status"
+            value={tab}
+            onChange={setTab}
+            className="max-w-full overflow-x-auto no-scrollbar"
+            options={TABS.map((t) => ({ value: t.id, label: t.label, badge: counts[t.id] }))}
+          />
+        }
+      />
 
-      <div className="flex gap-1 flex-wrap">
-        {TABS.map((t) => (
-          <button
-            key={t.id} onClick={() => setTab(t.id)}
-            className={cn(
-              "px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border",
-              tab === t.id
-                ? "bg-[color-mix(in_oklab,var(--color-neon)_15%,transparent)] border-[var(--color-neon)] text-[var(--color-neon-bright)]"
-                : "border-[var(--color-border)] text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)]",
-            )}
-          >
-            {t.label}
-            <span className="ml-1.5 num opacity-70">{counts[t.id]}</span>
-          </button>
-        ))}
-      </div>
-
-      <Panel>
+      <Panel bodyClassName="overflow-x-auto">
         {isLoading
           ? <div className="h-64 skeleton" />
           : <OrdersTable

@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
-import { Toaster } from "sonner";
 import { Providers } from "@/components/providers";
 import "./globals.css";
 
@@ -14,14 +13,29 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
+  // The dark default; ThemeProvider rewrites the meta when the user flips.
   themeColor: "#06060c",
   width: "device-width",
   initialScale: 1,
 };
 
+/* Stamp the stored theme before first paint. Anything less than a blocking
+   inline script here shows a dark flash to light-mode users on every
+   navigation that hits the server. Keep the key in sync with THEME_KEY in
+   src/components/theme-provider.tsx. */
+const THEME_SCRIPT = `(function(){try{var t=localStorage.getItem("xavage-theme");if(t!=="light"&&t!=="dark")t="dark";var r=document.documentElement;r.dataset.theme=t;r.style.colorScheme=t;}catch(e){document.documentElement.dataset.theme="dark";}})();`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${inter.variable} ${mono.variable}`}>
+    <html
+      lang="en"
+      data-theme="dark"
+      suppressHydrationWarning
+      className={`${inter.variable} ${mono.variable}`}
+    >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+      </head>
       <body>
         <Providers>{children}</Providers>
         {/* Vercel Web Analytics. Cookieless and no identifiers: it records the
@@ -29,17 +43,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             the middleware matcher below excludes /_vercel, or the beacon is
             answered with a redirect to /login for anyone not signed in. */}
         <Analytics />
-        <Toaster
-          theme="dark"
-          position="bottom-right"
-          toastOptions={{
-            style: {
-              background: "var(--color-surface-2)",
-              border: "1px solid var(--color-border)",
-              color: "var(--color-text)",
-            },
-          }}
-        />
       </body>
     </html>
   );

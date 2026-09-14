@@ -2,6 +2,7 @@
 
 import { AlertTriangle, Ban, Users } from "lucide-react";
 import { Panel } from "@/components/ui/panel";
+import { Delta } from "@/components/ui/delta";
 import { PriceChart } from "@/components/trade/price-chart";
 import { OrderTicket } from "@/components/trade/order-ticket";
 import { OrdersTable } from "@/components/tables/orders-table";
@@ -53,11 +54,11 @@ export function SymbolView({ instrument }: { instrument: Instrument }) {
   return (
     <div className="space-y-4">
       {/* header */}
-      <div className="panel-glow p-4">
+      <div className="panel-glow px-4 py-4 sm:px-5">
         <div className="flex flex-wrap items-start gap-x-6 gap-y-3 justify-between">
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2.5 flex-wrap">
-              <h1 className="num text-2xl font-bold tracking-tight">{symbol}</h1>
+              <h1 className="num text-xl font-bold tracking-tight">{symbol}</h1>
               {instrument.is_halted && (
                 <span className="chip chip-warn"><AlertTriangle size={11} /> Halted</span>
               )}
@@ -66,26 +67,25 @@ export function SymbolView({ instrument }: { instrument: Instrument }) {
               )}
               <span className="chip chip-neutral">{instrument.asset_type}</span>
             </div>
-            <p className="text-sm text-[var(--color-text-dim)] mt-0.5">{instrument.name}</p>
+            <p className="text-[13px] text-[var(--color-text-dim)] mt-1">{instrument.name}</p>
             <p className="text-[11px] text-[var(--color-text-faint)] mt-0.5">
               {[instrument.exchange, instrument.sector, instrument.industry]
                 .filter(Boolean).join(" · ") || "—"}
             </p>
           </div>
 
-          <div className="text-right">
-            <p className={cn("num text-3xl font-bold tracking-tight",
+          {/* The price is the loud number on this page; the tick tint on it is
+              what makes a live quote feel live. */}
+          <div className="text-right shrink-0">
+            <p className={cn("num text-[2.5rem] leading-none font-semibold tracking-tight transition-colors",
               quote?.tick === "up" ? "text-[var(--color-up)]"
                 : quote?.tick === "down" ? "text-[var(--color-down)]" : "")}>
               {price > 0 ? money(price) : "—"}
             </p>
-            <p className={cn("num text-sm font-semibold",
-              change > 0 ? "text-[var(--color-up)]"
-                : change < 0 ? "text-[var(--color-down)]"
-                : "text-[var(--color-text-dim)]")}>
-              {change >= 0 ? "+" : "−"}{num(Math.abs(change))} ({pct(changePct)})
-            </p>
-            <p className="text-[10.5px] text-[var(--color-text-faint)] mt-0.5">
+            <div className="flex items-center justify-end gap-1.5 mt-2">
+              <Delta abs={prev > 0 ? change : null} percent={prev > 0 ? changePct : null} size="md" />
+            </div>
+            <p className="text-[10.5px] text-[var(--color-text-faint)] mt-1">
               {quote ? `updated ${relative(quote.quote_time, now)}` : "awaiting feed"}
             </p>
           </div>
@@ -98,7 +98,7 @@ export function SymbolView({ instrument }: { instrument: Instrument }) {
         )}
 
         {/* session stats */}
-        <dl className="grid grid-cols-2 sm:grid-cols-5 gap-x-6 gap-y-2 mt-4 pt-3 border-t border-[var(--color-border-soft)]">
+        <dl className="grid grid-cols-3 sm:grid-cols-5 gap-x-6 gap-y-3 mt-4 pt-3 border-t border-[var(--color-border-soft)]">
           {[
             ["Open", quote?.day_open],
             ["High", quote?.day_high],
@@ -106,28 +106,30 @@ export function SymbolView({ instrument }: { instrument: Instrument }) {
             ["Prev close", quote?.prev_close],
           ].map(([label, value]) => (
             <div key={label as string}>
-              <dt className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">{label}</dt>
-              <dd className="num text-xs mt-0.5">{value != null ? num(Number(value)) : "—"}</dd>
+              <dt className="text-[10px] font-semibold uppercase tracking-[0.09em] text-[var(--color-text-faint)]">{label}</dt>
+              <dd className="num text-[13px] font-medium mt-1">{value != null ? num(Number(value)) : "—"}</dd>
             </div>
           ))}
           <div>
-            <dt className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Volume</dt>
-            <dd className="num text-xs mt-0.5">
+            <dt className="text-[10px] font-semibold uppercase tracking-[0.09em] text-[var(--color-text-faint)]">Volume</dt>
+            <dd className="num text-[13px] font-medium mt-1">
               {quote?.volume != null ? Number(quote.volume).toLocaleString("en-US") : "—"}
             </dd>
           </div>
         </dl>
       </div>
 
-      <div className="grid lg:grid-cols-[1fr_320px] gap-4 items-start">
+      <div className="grid lg:grid-cols-[minmax(0,1fr)_330px] gap-4 items-start">
         <div className="space-y-4 min-w-0">
-          <Panel title="Price" bodyClassName="p-3 pt-2">
+          {/* No panel title: the chart's own range/type bar is the header, and
+              two stacked headers on the page's biggest panel is one too many. */}
+          <Panel glow bodyClassName="pb-2">
             <PriceChart symbol={symbol} livePrice={price || undefined} height={400} />
           </Panel>
 
           {livePos && (
             <Panel title={`Your ${symbol} position`}>
-              <dl className="grid grid-cols-2 sm:grid-cols-5 gap-4 p-4">
+              <dl className="grid grid-cols-2 sm:grid-cols-5 gap-4 px-3.5 py-3.5">
                 {[
                   { label: "Quantity", value: qtyText(livePos.qty), tone: "" },
                   { label: "Avg cost", value: money(position!.avg_cost), tone: "" },
@@ -145,12 +147,12 @@ export function SymbolView({ instrument }: { instrument: Instrument }) {
                   },
                 ].map((cell) => (
                   <div key={cell.label}>
-                    <dt className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
+                    <dt className="text-[10px] font-semibold uppercase tracking-[0.09em] text-[var(--color-text-faint)]">
                       {cell.label}
                     </dt>
-                    <dd className={cn("num text-sm font-semibold mt-0.5", cell.tone)}>
+                    <dd className={cn("num text-[15px] font-semibold mt-1", cell.tone)}>
                       {cell.value}
-                      {cell.sub && <span className="block text-[10px] font-normal">{cell.sub}</span>}
+                      {cell.sub && <span className="block text-[10px] font-normal opacity-80">{cell.sub}</span>}
                     </dd>
                   </div>
                 ))}
@@ -158,7 +160,7 @@ export function SymbolView({ instrument }: { instrument: Instrument }) {
             </Panel>
           )}
 
-          <Panel title={`${symbol} orders`}>
+          <Panel title={`${symbol} orders`} bodyClassName="overflow-x-auto">
             <OrdersTable
               orders={symbolOrders}
               emptyHint={`Orders you place on ${symbol} will appear here.`}
@@ -166,6 +168,8 @@ export function SymbolView({ instrument }: { instrument: Instrument }) {
           </Panel>
         </div>
 
+        {/* The ticket stays in view while the chart scrolls: sticky under the
+            nav (52px) + tape (36px) + the main padding. */}
         <div className="lg:sticky lg:top-[104px]">
           <Panel glow title="Order ticket" bodyClassName="p-0">
             {/* Admins have no team, so there is no book to trade against --

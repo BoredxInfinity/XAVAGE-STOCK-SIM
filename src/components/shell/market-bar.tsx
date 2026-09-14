@@ -61,7 +61,7 @@ export function MarketBar() {
 
   return (
     <div className="border-b border-[var(--color-border-soft)] bg-[var(--color-bg-elev)]">
-      <div className="max-w-[1600px] mx-auto px-4 lg:px-6 h-9 flex items-center gap-4">
+      <div className="max-w-[1600px] mx-auto px-4 lg:px-6 h-9 flex items-center gap-3">
         <div className="flex items-center gap-2 shrink-0">
           {halted ? (
             <span className="chip chip-warn">
@@ -101,9 +101,11 @@ export function MarketBar() {
 
         <div className="h-4 w-px bg-[var(--color-border)] shrink-0 hidden sm:block" />
 
-        {/* Tape. Overflows horizontally rather than wrapping or clipping. */}
-        <div className="flex-1 overflow-x-auto no-scrollbar">
-          <div className="flex items-center gap-4 w-max">
+        {/* Tape. Overflows horizontally rather than wrapping or clipping;
+            the mask fades it into the bar edges instead of cutting a quote
+            in half at the boundary. */}
+        <div className="flex-1 overflow-x-auto no-scrollbar edge-fade">
+          <div className="flex items-center gap-0 w-max">
             {tape.length === 0 && (
               <span className="text-[11px] text-[var(--color-text-faint)]">
                 Waiting for the price feed…
@@ -116,14 +118,17 @@ export function MarketBar() {
                 <Link
                   key={q.symbol} href={`/trade/${q.symbol}`}
                   className={cn(
-                    "flex items-center gap-1.5 text-[11px] rounded px-1 -mx-1 shrink-0",
+                    "group flex items-center gap-1.5 text-[11px] shrink-0 px-2.5 h-7 rounded-md",
+                    "border border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-surface-2)] transition-colors",
                     flashClass(q),
                   )}
                 >
-                  <span className="font-semibold text-[var(--color-text-dim)]">{q.symbol}</span>
+                  <span className="font-semibold tracking-wide text-[var(--color-text-dim)] group-hover:text-[var(--color-text)]">
+                    {q.symbol}
+                  </span>
                   <span className="num text-[var(--color-text)]">{num(q.price)}</span>
                   <span className={cn(
-                    "num",
+                    "num text-[10px]",
                     change > 0 ? "text-[var(--color-up)]"
                       : change < 0 ? "text-[var(--color-down)]"
                       : "text-[var(--color-text-faint)]",

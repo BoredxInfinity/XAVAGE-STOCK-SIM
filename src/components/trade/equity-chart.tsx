@@ -3,6 +3,8 @@
 import { useEffect, useRef } from "react";
 import { AreaSeries, ColorType, createChart, type UTCTimestamp } from "lightweight-charts";
 import { istCrosshair, istTickMark } from "@/lib/chart-time";
+import { useTheme } from "@/components/theme-provider";
+import { chartPalette } from "@/lib/chart-theme";
 
 interface Point { ts: string; equity: number }
 
@@ -11,21 +13,27 @@ export function EquityChart({
   points, height = 200, initialCapital,
 }: { points: Point[]; height?: number; initialCapital?: number }) {
   const holder = useRef<HTMLDivElement>(null);
+  const { theme } = useTheme();
 
   useEffect(() => {
     if (!holder.current) return;
 
+    // This chart is cheap and read-only -- no pan, no zoom, no live bar -- so
+    // rebuilding it on a theme flip costs nothing and keeps the code simple.
+    // (The price chart cannot do this; see its applyOptions effect.)
+    const pal = chartPalette(theme);
+
     const chart = createChart(holder.current, {
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
-        textColor: "#9a9ab8",
+        textColor: pal.text,
         fontFamily: "var(--font-mono), monospace",
         fontSize: 10,
         attributionLogo: false,
       },
       grid: {
         vertLines: { visible: false },
-        horzLines: { color: "rgba(35,35,61,.4)" },
+        horzLines: { color: pal.grid },
       },
       rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.15, bottom: 0.08 } },
       localization: { timeFormatter: istCrosshair },
@@ -43,9 +51,9 @@ export function EquityChart({
     const up = initialCapital == null || latest >= initialCapital;
 
     const series = chart.addSeries(AreaSeries, {
-      lineColor: up ? "#00e19b" : "#ff3d6e",
-      topColor: up ? "rgba(0,225,155,.28)" : "rgba(255,61,110,.28)",
-      bottomColor: "rgba(168,85,247,.02)",
+      lineColor: up ? pal.up : pal.down,
+      topColor: up ? pal.equityUpTop : pal.equityDownTop,
+      bottomColor: pal.equityBottom,
       lineWidth: 2,
       priceLineVisible: false,
     });
@@ -61,7 +69,7 @@ export function EquityChart({
     if (initialCapital != null && initialCapital > 0) {
       series.createPriceLine({
         price: initialCapital,
-        color: "rgba(154,154,184,.55)",
+        color: pal.baseline,
         lineWidth: 1,
         lineStyle: 2,
         axisLabelVisible: true,
@@ -71,7 +79,7 @@ export function EquityChart({
 
     chart.timeScale().fitContent();
     return () => chart.remove();
-  }, [points, initialCapital]);
+  }, [points, initialCapital, theme]);
 
   if (points.length === 0) {
     return (

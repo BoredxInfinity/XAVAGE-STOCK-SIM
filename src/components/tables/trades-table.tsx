@@ -38,7 +38,7 @@ export function TradesTable({ trades }: { trades: Trade[] }) {
               </td>
               <td>
                 <Link href={`/trade/${t.symbol}`}
-                      className="num text-xs font-bold text-[var(--color-neon-bright)] hover:underline">
+                      className="num text-[12.5px] font-bold tracking-wide text-[var(--color-neon-bright)] hover:underline">
                   {t.symbol}
                 </Link>
               </td>
@@ -47,18 +47,18 @@ export function TradesTable({ trades }: { trades: Trade[] }) {
                   {t.side}
                 </span>
               </td>
-              <td className="r num">{qtyText(t.qty)}</td>
-              <td className="r num">{money(t.price)}</td>
-              <td className="r num hidden md:table-cell text-[var(--color-text-dim)]">
+              <td className="r num whitespace-nowrap">{qtyText(t.qty)}</td>
+              <td className="r num font-medium whitespace-nowrap">{money(t.price)}</td>
+              <td className="r num hidden md:table-cell text-[var(--color-text-dim)] whitespace-nowrap">
                 {money(t.gross_amount)}
               </td>
-              <td className="r num hidden lg:table-cell text-[var(--color-text-dim)]">
+              <td className="r num hidden lg:table-cell text-[var(--color-text-dim)] whitespace-nowrap">
                 {money(t.commission)}
               </td>
-              <td className={cn("r num", toneClass(t.net_cash_delta))}>
+              <td className={cn("r num whitespace-nowrap", toneClass(t.net_cash_delta))}>
                 {signedMoney(t.net_cash_delta)}
               </td>
-              <td className={cn("r num font-semibold", toneClass(t.realized_pnl))}>
+              <td className={cn("r num font-semibold whitespace-nowrap", toneClass(t.realized_pnl))}>
                 {t.realized_pnl !== 0 ? signedMoney(t.realized_pnl) : "—"}
               </td>
             </tr>
