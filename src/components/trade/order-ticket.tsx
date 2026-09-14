@@ -45,7 +45,16 @@ export function OrderTicket({ symbol }: { symbol: string }) {
 
   // Reset the idempotency key whenever the ticket materially changes, so an
   // edited order isn't mistaken for a retry of the previous one.
-  useEffect(() => { setIdemKey(crypto.randomUUID()); }, [symbol, side, type]);
+  //
+  // qty and the price fields are load-bearing here and were missing. The key
+  // is deliberately NOT rotated on error -- that is what makes a retry after a
+  // lost response idempotent -- so without them: submit 10 shares, lose the
+  // response on flaky wifi, see "rejected", type 50, submit again, and the
+  // engine recognises the key and returns the ORIGINAL 10-share order as a
+  // duplicate. You think you hold 50. You hold 10.
+  useEffect(() => {
+    setIdemKey(crypto.randomUUID());
+  }, [symbol, side, type, qty, limitPrice, stopPrice, trailPercent, tif]);
 
   const qtyNum = Number(qty) || 0;
 
@@ -124,9 +133,23 @@ export function OrderTicket({ symbol }: { symbol: string }) {
       return;
     }
 
-    const result = data as unknown as { executed?: boolean; message: string };
-    if (result.executed) toast.success("Filled", { description: result.message });
-    else toast.info("Order placed", { description: result.message });
+    const result = data as unknown as {
+      executed?: boolean; duplicate?: boolean; message: string;
+    };
+
+    // A duplicate is NOT a placed order -- it means the engine matched this
+    // submission to one already on the book and did nothing. Reporting it as
+    // "Order placed" is how a trader ends up believing in a position they do
+    // not have.
+    if (result.duplicate) {
+      toast.warning("Already submitted", {
+        description: "This ticket was already sent. Check your orders before resending.",
+      });
+    } else if (result.executed) {
+      toast.success("Filled", { description: result.message });
+    } else {
+      toast.info("Order placed", { description: result.message });
+    }
 
     setQty("");
     setIdemKey(crypto.randomUUID());

@@ -75,8 +75,62 @@ export function toneClass(value: number | null | undefined) {
  */
 export const DISPLAY_TZ = "Asia/Kolkata";
 
-const time = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-const dateTime = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+// timeZone is the whole point of DISPLAY_TZ and was missing: without it these
+// formatted in whatever zone the laptop was set to, which is exactly the
+// two-clocks problem the constant above exists to prevent.
+const time = new Intl.DateTimeFormat("en-US", {
+  timeZone: DISPLAY_TZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+});
+const dateTime = new Intl.DateTimeFormat("en-US", {
+  timeZone: DISPLAY_TZ, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+});
+
+// en-CA renders ISO-ish YYYY-MM-DD, which is what <input type="datetime-local">
+// wants. Kept separate from the display formatters above so their shape can
+// change without breaking form round-tripping.
+const inputParts = new Intl.DateTimeFormat("en-CA", {
+  timeZone: DISPLAY_TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hour12: false,
+});
+
+function wallClockParts(at: Date) {
+  const p = Object.fromEntries(inputParts.formatToParts(at).map((x) => [x.type, x.value]));
+  // hour12:false yields "24" for midnight in some engines.
+  const hour = String(Number(p.hour) % 24).padStart(2, "0");
+  return { year: p.year, month: p.month, day: p.day, hour, minute: p.minute };
+}
+
+/**
+ * UTC instant -> the value an <input type="datetime-local"> expects.
+ *
+ * The input reads and writes LOCAL wall-clock time. The admin settings form
+ * used `new Date(iso).toISOString().slice(0, 16)`, i.e. it put a UTC wall
+ * clock into a local-wall-clock field: on IST that displayed
+ * competition_start_at 5h30m adrift from every other panel, and re-saving an
+ * untouched field reinterpreted the displayed UTC as IST and shifted the
+ * stored value back 5.5 hours -- every single time it was saved. These fields
+ * gate order acceptance.
+ */
+export function toDateTimeLocal(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const p = wallClockParts(at);
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+}
+
+/** The inverse: a wall clock typed in DISPLAY_TZ -> the UTC instant it names. */
+export function fromDateTimeLocal(value: string): string | null {
+  if (!value) return null;
+  const asIfUtc = new Date(`${value}:00Z`);
+  if (Number.isNaN(asIfUtc.getTime())) return null;
+
+  // How far DISPLAY_TZ sits from UTC at that instant, read back from the
+  // formatter so the zone database supplies it rather than a hard-coded +5:30.
+  const p = wallClockParts(asIfUtc);
+  const shown = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute);
+  return new Date(asIfUtc.getTime() - (shown - asIfUtc.getTime())).toISOString();
+}
 
 export function clockTime(iso: string | null | undefined) {
   if (!iso) return "—";
@@ -143,4 +197,21 @@ export function statusChipClass(status: string) {
 /** True while an order can still fill or be cancelled. */
 export function isWorking(status: string) {
   return status === "open" || status === "partially_filled" || status === "pending";
+}
+
+
+/**
+ * One CSV cell, quoted and de-fanged.
+ *
+ * Quote-escaping alone is not enough: Excel, Sheets and Numbers all treat a
+ * cell beginning with = + - or @ as a FORMULA, so a team called
+ * `=HYPERLINK("http://evil","click")` executes when someone opens the export.
+ * Team names and display names are free text, and the rankings CSV is the file
+ * most likely to be opened by a judge. Prefixing a single quote is the
+ * standard neutralisation -- spreadsheets strip it on display.
+ */
+export function csvCell(value: unknown): string {
+  const text = String(value ?? "");
+  const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  return `"${safe.replace(/"/g, '""')}"`;
 }

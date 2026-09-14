@@ -6,6 +6,7 @@ import { Empty } from "@/components/ui/empty";
 import { useQuote } from "@/hooks/use-quote";
 import { cn, money, pct, qtyText, signedMoney, toneClass } from "@/lib/format";
 import type { PortfolioPosition } from "@/lib/database.types";
+import { flashClass } from "@/lib/quote-store";
 
 function PositionRow({ position }: { position: PortfolioPosition }) {
   // Prefer the live store price over the snapshot baked into the RPC payload.
@@ -21,7 +22,7 @@ function PositionRow({ position }: { position: PortfolioPosition }) {
     : 0;
 
   return (
-    <tr className={cn(live?.tick === "up" && "flash-up", live?.tick === "down" && "flash-down")}>
+    <tr className={flashClass(live)}>
       <td>
         <Link href={`/trade/${position.symbol}`} className="group flex flex-col">
           <span className="num text-xs font-bold text-[var(--color-neon-bright)] group-hover:underline">

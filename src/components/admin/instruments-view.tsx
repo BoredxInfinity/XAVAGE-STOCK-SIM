@@ -10,8 +10,12 @@ import { useQuotesVersion } from "@/hooks/use-quote";
 import { quoteStore } from "@/lib/quote-store";
 import { cn, num, relative } from "@/lib/format";
 import type { Instrument } from "@/lib/database.types";
+import { useNow } from "@/hooks/use-now";
 
 export function InstrumentsView() {
+  // Shared 1s clock -- relative() is computed during render, so without this
+  // the ages freeze between data changes and a live page reads as a dead one.
+  const now = useNow();
   const qc = useQueryClient();
   const version = useQuotesVersion();
   const [symbol, setSymbol] = useState("");
@@ -139,7 +143,7 @@ export function InstrumentsView() {
                   </td>
                   <td className="r num">{i.quote ? num(i.quote.price) : "—"}</td>
                   <td className="hidden md:table-cell text-[11px] text-[var(--color-text-faint)]">
-                    {i.quote ? relative(i.quote.quote_time) : "no quote"}
+                    {i.quote ? relative(i.quote.quote_time, now) : "no quote"}
                   </td>
                   <td>
                     {!i.is_tradable ? <span className="chip chip-neutral">Disabled</span>

@@ -6,9 +6,13 @@ import { Panel } from "@/components/ui/panel";
 import { StatTile } from "@/components/ui/stat-tile";
 import { EquityChart } from "@/components/trade/equity-chart";
 import { useEquityCurve, useLeaderboard, useMarketStatus } from "@/hooks/use-app-data";
-import { cn, money, pct, qtyText, signedMoney, stamp, toneClass } from "@/lib/format";
+import { cn, csvCell, money, pct, qtyText, signedMoney, stamp, toneClass } from "@/lib/format";
+import { useNow } from "@/hooks/use-now";
 
 export function RankingsView() {
+  // Shared 1s clock -- relative() is computed during render, so without this
+  // the ages freeze between data changes and a live page reads as a dead one.
+  const now = useNow();
   const { data: teams = [], isLoading, refetch, isFetching } = useLeaderboard();
   const { data: status } = useMarketStatus();
   const [selected, setSelected] = useState<string | null>(null);
@@ -36,7 +40,7 @@ export function RankingsView() {
       (t.members ?? []).join(" | "),
     ]);
     const csv = [header, ...rows]
-      .map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(","))
+      .map((r) => r.map(csvCell).join(","))
       .join("\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
     const a = document.createElement("a");
@@ -169,7 +173,7 @@ export function RankingsView() {
       )}
 
       <p className="text-[11px] text-[var(--color-text-faint)] text-center">
-        Marked live at {stamp(new Date().toISOString())} · click a team to see its equity curve
+        Marked live at {stamp(new Date(now).toISOString())} · click a team to see its equity curve
       </p>
     </div>
   );

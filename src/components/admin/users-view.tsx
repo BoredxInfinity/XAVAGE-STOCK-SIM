@@ -10,8 +10,9 @@ import {
 import { generateCredential } from "@/lib/credentials";
 import { Panel } from "@/components/ui/panel";
 import { createClient } from "@/lib/supabase/client";
-import { cn, relative } from "@/lib/format";
+import { cn, csvCell, relative } from "@/lib/format";
 import type { Team } from "@/lib/database.types";
+import { useNow } from "@/hooks/use-now";
 
 interface AdminUser {
   id: string;
@@ -31,6 +32,9 @@ interface AdminUser {
 }
 
 export function UsersView() {
+  // Shared 1s clock -- relative() is computed during render, so without this
+  // the ages freeze between data changes and a live page reads as a dead one.
+  const now = useNow();
   const qc = useQueryClient();
   const [form, setForm] = useState({ email: "", display_name: "", role: "participant", team_id: "", password: "" });
   const [busy, setBusy] = useState(false);
@@ -104,14 +108,32 @@ export function UsersView() {
     setBusy(false);
   }
 
+  // Which rows have a PATCH in flight. Without this the team <select> and the
+  // enable/disable button were both fire-and-forget on every change, and the
+  // disable button computed `!u.is_active` from React Query's cache -- so a
+  // double-click sent two PATCHes racing, the UI showed the pre-refresh state
+  // in between, and whichever landed last won. Switching a participant's
+  // account off mid-competition is not an action that should be racy.
+  const [pending, setPending] = useState<Set<string>>(new Set());
+
   async function patch(id: string, body: Record<string, unknown>, label: string) {
-    const res = await fetch(`/api/admin/users/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) toast.error("Failed", { description: (await res.json()).error });
-    else { toast.success(label); refresh(); }
+    if (pending.has(id)) return;
+    setPending((prev) => new Set(prev).add(id));
+    try {
+      const res = await fetch(`/api/admin/users/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) toast.error("Failed", { description: (await res.json()).error });
+      else { toast.success(label); await refresh(); }
+    } finally {
+      setPending((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
   }
 
   /** Mint a fresh readable credential server-side and store it against the account. */
@@ -173,7 +195,7 @@ export function UsersView() {
     if (rows.length === 0) { toast.error("No issued credentials to export."); return; }
 
     const csv = [["Name", "Email", "Password", "Team"], ...rows]
-      .map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(","))
+      .map((r) => r.map(csvCell).join(","))
       .join("\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
     const a = document.createElement("a");
@@ -323,6 +345,7 @@ export function UsersView() {
                       <select
                         className="field !py-1 !text-[11px] !w-36"
                         value={u.team_id ?? ""}
+                        disabled={pending.has(u.id)}
                         onChange={(e) => patch(u.id, { team_id: e.target.value || null },
                                                `${u.display_name} reassigned`)}
                       >
@@ -371,7 +394,7 @@ export function UsersView() {
                       )}
                     </td>
                     <td className="hidden xl:table-cell text-[11px] text-[var(--color-text-faint)]">
-                      {u.last_login_at ? relative(u.last_login_at) : "never"}
+                      {u.last_login_at ? relative(u.last_login_at, now) : "never"}
                     </td>
                     <td>
                       {!u.is_active ? <span className="chip chip-down">Disabled</span>
@@ -392,7 +415,9 @@ export function UsersView() {
                         <button
                           onClick={() => patch(u.id, { is_active: !u.is_active },
                                                u.is_active ? `${u.display_name} disabled` : `${u.display_name} re-enabled`)}
-                          className={cn("btn !px-2 !py-1 !text-[11px]", u.is_active ? "btn-danger" : "btn-ghost")}
+                          disabled={pending.has(u.id)}
+                          className={cn("btn !px-2 !py-1 !text-[11px]", u.is_active ? "btn-danger" : "btn-ghost",
+                                        pending.has(u.id) && "opacity-50")}
                           title={u.is_active ? "Disable account" : "Re-enable account"}
                         >
                           <UserX size={12} />

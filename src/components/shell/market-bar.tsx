@@ -9,6 +9,7 @@ import { useNow } from "@/hooks/use-now";
 import { quoteStore } from "@/lib/quote-store";
 import { cn, num, pct, relative } from "@/lib/format";
 import type { MarketState } from "@/lib/database.types";
+import { flashClass } from "@/lib/quote-store";
 
 /**
  * The exchange's own session, in four states rather than open/shut.
@@ -86,7 +87,7 @@ export function MarketBar() {
                   key={q.symbol} href={`/trade/${q.symbol}`}
                   className={cn(
                     "flex items-center gap-1.5 text-[11px] rounded px-1 -mx-1 shrink-0",
-                    q.tick === "up" ? "flash-up" : q.tick === "down" ? "flash-down" : "",
+                    flashClass(q),
                   )}
                 >
                   <span className="font-semibold text-[var(--color-text-dim)]">{q.symbol}</span>

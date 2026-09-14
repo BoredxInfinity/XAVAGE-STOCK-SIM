@@ -34,14 +34,28 @@ export function OrdersTable({
 
   async function cancel(id: string) {
     setCancelling(id);
-    const { data, error } = await createClient().rpc("cancel_order", { p_order_id: id });
+    try {
+      const { data, error } = await createClient().rpc("cancel_order", { p_order_id: id });
 
-    if (error) toast.error("Could not cancel", { description: error.message });
-    else toast.success((data as unknown as { message: string }).message);
+      if (error) {
+        toast.error("Could not cancel", { description: error.message });
+      } else {
+        // Optional-chained and defaulted: reading .message off a null payload
+        // threw inside an async handler with no catch, which meant the reset
+        // below never ran and the Cancel button span permanently.
+        const message = (data as unknown as { message?: string } | null)?.message;
+        toast.success(message ?? "Order cancelled.");
+      }
 
-    qc.invalidateQueries({ queryKey: ["orders"] });
-    qc.invalidateQueries({ queryKey: ["portfolio"] });
-    setCancelling(null);
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["portfolio"] });
+    } catch (err) {
+      toast.error("Could not cancel", {
+        description: err instanceof Error ? err.message : "Unexpected error.",
+      });
+    } finally {
+      setCancelling(null);
+    }
   }
 
   if (orders.length === 0) {

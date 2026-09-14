@@ -144,7 +144,24 @@ export function PriceChart({
     if (bars.length > 0) applyBars(bars);
     // applyBars is stable for this effect's purposes
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, bars]);
+  }, [mode]);
+
+  /* ---- push new data onto the EXISTING series ---- */
+  //
+  // Split out of the effect above, which had `bars` in its dependency list.
+  // load() calls setBars on every poll, so the array identity changed every
+  // 30s even when the bytes were identical -- and the chart tore down and
+  // rebuilt its lightweight-charts series that often, re-running setData for
+  // up to 1500 bars and resetting lastWritten/plotted each time.
+  useEffect(() => {
+    if (!mainRef.current) return;
+    // An empty payload must NOT be written: it would blank the series while
+    // leaving lastWritten pointing at a bar that is no longer on it, and the
+    // working-bar effect then bails on every tick.
+    if (bars.length === 0) return;
+    applyBars(bars);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bars]);
 
   function applyBars(list: Bar[]) {
     const series = mainRef.current;
@@ -192,7 +209,20 @@ export function PriceChart({
           if (cancelled) return;
           if (json.error) { if (initial) setError(json.error); return; }
           barsRange.current = range;
-          setBars(json.bars ?? []);
+          const next = json.bars ?? [];
+          // Identity, not just equality: a new array on every poll is what
+          // made the effect above re-run. Compare the cheap discriminators --
+          // length and the last bar -- and keep the old reference otherwise.
+          setBars((prev) => {
+            if (prev.length === next.length && prev.length > 0) {
+              const a = prev[prev.length - 1], b = next[next.length - 1];
+              if (a.time === b.time && a.close === b.close && a.high === b.high
+                  && a.low === b.low && a.open === b.open) {
+                return prev;
+              }
+            }
+            return next;
+          });
         })
         // A failed refresh keeps the bars already on screen; only the first
         // load has nothing to fall back to.

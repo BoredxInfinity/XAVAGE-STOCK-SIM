@@ -6,7 +6,7 @@ import { Panel } from "@/components/ui/panel";
 import { StatTile } from "@/components/ui/stat-tile";
 import { TradesTable } from "@/components/tables/trades-table";
 import { useTrades } from "@/hooks/use-app-data";
-import { money, signedMoney, toneOf } from "@/lib/format";
+import { csvCell, money, signedMoney, toneOf } from "@/lib/format";
 
 export function HistoryView() {
   const { data: trades = [], isLoading } = useTrades(500);
@@ -41,7 +41,7 @@ export function HistoryView() {
       t.gross_amount, t.commission, t.net_cash_delta, t.realized_pnl,
     ]);
     const csv = [header, ...rows]
-      .map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(","))
+      .map((r) => r.map(csvCell).join(","))
       .join("\n");
 
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
@@ -73,7 +73,9 @@ export function HistoryView() {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <StatTile label="Fills" value={trades.length} />
+        {/* `visible`, not `trades`: the tiles sit directly above the filtered
+            table, so counting everything made "Fills: 500" head a 12-row list. */}
+        <StatTile label="Fills" value={visible.length} />
         <StatTile label="Realised P&L" tone={toneOf(stats.realized)} value={signedMoney(stats.realized)} />
         <StatTile label="Win rate"
                   value={stats.winRate == null ? "—" : `${stats.winRate.toFixed(0)}%`}

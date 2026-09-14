@@ -6,7 +6,7 @@ import { Gauge } from "lucide-react";
 import { Panel } from "@/components/ui/panel";
 import { createClient } from "@/lib/supabase/client";
 import { useNow } from "@/hooks/use-now";
-import { cn, duration } from "@/lib/format";
+import { DISPLAY_TZ, cn, duration } from "@/lib/format";
 import type { WorkerLog, WorkerLogLevel } from "@/lib/database.types";
 
 /**
@@ -87,7 +87,11 @@ function quantile(sorted: number[], q: number) {
 }
 
 function axisTime(t: number, seconds: boolean) {
-  return new Date(t).toLocaleTimeString([], {
+  // DISPLAY_TZ, not the browser's zone: this axis sits directly above the
+  // worker log and the blotter, and an organiser diagnosing a feed stall does
+  // it by comparing timestamps across those panels.
+  return new Date(t).toLocaleTimeString("en-US", {
+    timeZone: DISPLAY_TZ,
     hour: "2-digit", minute: "2-digit", ...(seconds ? { second: "2-digit" } : {}), hour12: false,
   });
 }

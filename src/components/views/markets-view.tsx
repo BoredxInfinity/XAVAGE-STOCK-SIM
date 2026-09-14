@@ -10,6 +10,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useQuotesVersion } from "@/hooks/use-quote";
 import { quoteStore } from "@/lib/quote-store";
 import { cn, compactNum, num, pct } from "@/lib/format";
+import { flashClass } from "@/lib/quote-store";
 
 type SortKey = "symbol" | "price" | "change" | "volume";
 
@@ -135,7 +136,7 @@ export function MarketsView() {
             )}
             {rows.map((r) => (
               <tr key={r.symbol}
-                  className={cn(r.tick === "up" && "flash-up", r.tick === "down" && "flash-down")}>
+                  className={flashClass(r)}>
                 <td>
                   <Link href={`/trade/${r.symbol}`} className="group flex flex-col">
                     <span className="num text-xs font-bold text-[var(--color-neon-bright)] group-hover:underline">

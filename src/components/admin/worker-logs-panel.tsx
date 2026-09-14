@@ -7,7 +7,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, Loader2, ScrollText, Trash2 }
 import { Panel } from "@/components/ui/panel";
 import { createClient } from "@/lib/supabase/client";
 import { useNow } from "@/hooks/use-now";
-import { cn, duration, relative } from "@/lib/format";
+import { clockTime, cn, duration, relative } from "@/lib/format";
 import type { WorkerLog, WorkerLogLevel } from "@/lib/database.types";
 
 /** Only two filters matter in practice: "what happened" and "what went wrong". */
@@ -149,7 +149,7 @@ export function WorkerLogsPanel() {
                 )}
               >
                 <span className="num text-[var(--color-text-faint)] shrink-0 tabular-nums">
-                  {new Date(l.ts).toLocaleTimeString([], { hour12: false })}
+                  {clockTime(l.ts)}
                 </span>
                 <span className={cn("shrink-0 font-mono uppercase w-14", LEVEL_STYLE[l.level])}>
                   {l.level === "CRITICAL" ? "CRIT" : l.level}

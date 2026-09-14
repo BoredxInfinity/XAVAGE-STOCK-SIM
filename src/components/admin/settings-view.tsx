@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Loader2, Pause, Play, RotateCcw, Save, TriangleAlert } from "lucide-react";
 import { Panel } from "@/components/ui/panel";
 import { createClient } from "@/lib/supabase/client";
-import { cn, stamp } from "@/lib/format";
+import { cn, stamp, toDateTimeLocal, fromDateTimeLocal } from "@/lib/format";
 import type { GameSettings } from "@/lib/database.types";
 
 type Field = {
@@ -113,7 +113,18 @@ export function SettingsView() {
     },
   });
 
-  useEffect(() => { setDraft({}); }, [settings?.updated_at]);
+  // Another admin saving anything used to wipe whatever was half-typed here,
+  // with no warning. Keep the draft and say so -- two organisers on the
+  // settings page at once is normal during an event.
+  const firstLoad = useRef(true);
+  useEffect(() => {
+    if (firstLoad.current) { firstLoad.current = false; return; }
+    if (Object.keys(draft).length === 0) return;
+    toast.info("Settings were changed elsewhere", {
+      description: "Your unsaved edits are still here. Save to apply them on top.",
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings?.updated_at]);
 
   const dirty = useMemo(() => {
     if (!settings) return [];
@@ -252,9 +263,9 @@ export function SettingsView() {
                       ) : field.kind === "datetime" ? (
                         <input
                           id={String(field.key)} type="datetime-local" className="field num"
-                          value={value ? new Date(String(value)).toISOString().slice(0, 16) : ""}
+                          value={toDateTimeLocal(value as string | null)}
                           onChange={(e) =>
-                            set(field.key, (e.target.value ? new Date(e.target.value).toISOString() : null) as never)}
+                            set(field.key, fromDateTimeLocal(e.target.value) as never)}
                         />
                       ) : field.kind === "number" ? (
                         <input

@@ -86,6 +86,8 @@ export function MarketDataProvider({ children }: { children: React.ReactNode }) 
     }
     seed();
 
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
     // The legacy path, kept whole so the fallback is the code that used to
     // work rather than an untested approximation of it.
     function subscribeViaPostgresChanges() {
@@ -123,43 +125,96 @@ export function MarketDataProvider({ children }: { children: React.ReactNode }) 
 
       ch.subscribe((status) => {
         if (cancelled || fellBack) return;
-        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-          fellBack = true;
-          console.warn(
-            `[xavage] price broadcast unavailable (${status}); falling back to postgres_changes`,
-          );
-          supabase.removeChannel(ch);
+        if (status !== "CHANNEL_ERROR" && status !== "TIMED_OUT") return;
+
+        fellBack = true;
+        supabase.removeChannel(ch);
+
+        // Do NOT switch every browser over at once.
+        //
+        // Postgres Changes on `quotes` is ~105x the message volume of the
+        // broadcast -- the whole reason migration 0013 moved prices off it --
+        // so if broadcast fails for everyone simultaneously (a Realtime config
+        // change, an expired policy, a platform blip) an instant fallback
+        // stampedes 300 clients onto the expensive path together and takes the
+        // Realtime quota with it. That converts a degraded feed into an outage.
+        //
+        // So: re-seed immediately from `quotes` over plain REST, which is what
+        // actually restores correct prices, and only then drift onto the
+        // costlier subscription after a random delay. The reconcile poll is
+        // already covering the gap in the meantime.
+        seed({ full: true });
+
+        const delay = 2_000 + Math.random() * 13_000;
+        console.warn(
+          `[xavage] price broadcast unavailable (${status}); reseeding now, ` +
+          `postgres_changes fallback in ${Math.round(delay / 1000)}s`,
+        );
+
+        fallbackTimer = setTimeout(() => {
+          if (cancelled) return;
           priceChannel = subscribeViaPostgresChanges();
-          seed({ full: true });   // re-sync now: the fallback only carries changes from here on
-        }
+          seed({ full: true });   // the fallback only carries changes from here on
+        }, delay);
       });
       return ch;
     }
 
     let priceChannel = USE_BROADCAST ? subscribeViaBroadcast() : subscribeViaPostgresChanges();
 
+    // Coalesced invalidation.
+    //
+    // Two problems this solves. First, ONE fill writes orders, positions,
+    // trades and teams -- four separate socket messages, in four microtasks,
+    // three of which invalidate ["portfolio"]. React Query does not merge
+    // them, so a single fill cost up to four get_portfolio() calls per open
+    // tab, per member of the team.
+    //
+    // Second, `announcements` and `game_settings` are GLOBAL. An organiser
+    // flipping "halt trading" invalidated market-status and portfolio on every
+    // connected client in the same instant -- with 300 people that is ~600
+    // concurrent RPCs, arriving at precisely the moment the system most needs
+    // to stay responsive. The jitter spreads those over a couple of seconds.
+    const pending = new Set<string>();
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function invalidate(keys: string[], spread = 0) {
+      keys.forEach((k) => pending.add(k));
+      if (flushTimer) return;
+      // Local events flush on the next tick; global ones get a random delay so
+      // 300 browsers do not arrive together.
+      const delay = spread > 0 ? Math.random() * spread : 50;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        const keys = [...pending];
+        pending.clear();
+        keys.forEach((key) => qc.invalidateQueries({ queryKey: [key] }));
+      }, delay);
+    }
+
+    const GLOBAL_SPREAD_MS = 3_000;
+
     const bookChannel = supabase
       .channel("xavage:book")
       .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => {
-        qc.invalidateQueries({ queryKey: ["orders"] });
-        qc.invalidateQueries({ queryKey: ["portfolio"] });
+        invalidate(["orders", "portfolio"]);
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "positions" }, () => {
-        qc.invalidateQueries({ queryKey: ["portfolio"] });
+        invalidate(["portfolio"]);
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "trades" }, () => {
-        qc.invalidateQueries({ queryKey: ["trades"] });
-        qc.invalidateQueries({ queryKey: ["portfolio"] });
+        // The ledger moves on every fill too, and nothing was refreshing it --
+        // a trader who bought and looked at their cash ledger saw nothing.
+        invalidate(["trades", "portfolio", "ledger"]);
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "teams" }, () => {
-        qc.invalidateQueries({ queryKey: ["portfolio"] });
+        invalidate(["portfolio", "ledger"]);
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "announcements" }, () => {
-        qc.invalidateQueries({ queryKey: ["announcements"] });
+        invalidate(["announcements"], GLOBAL_SPREAD_MS);
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "game_settings" }, () => {
-        qc.invalidateQueries({ queryKey: ["market-status"] });
-        qc.invalidateQueries({ queryKey: ["portfolio"] });
+        invalidate(["market-status", "portfolio"], GLOBAL_SPREAD_MS);
       })
       .subscribe();
 
@@ -195,6 +250,8 @@ export function MarketDataProvider({ children }: { children: React.ReactNode }) 
     return () => {
       cancelled = true;
       clearInterval(poll);
+      if (flushTimer) clearTimeout(flushTimer);
+      if (fallbackTimer) clearTimeout(fallbackTimer);
       document.removeEventListener("visibilitychange", onVisibility);
       supabase.removeChannel(priceChannel);
       supabase.removeChannel(bookChannel);

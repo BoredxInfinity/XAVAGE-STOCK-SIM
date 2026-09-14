@@ -36,20 +36,31 @@ export function SymbolSearch({
     if (term.length === 0) { setHits([]); setLoading(false); return; }
 
     setLoading(true);
+    // The debounce timer was the only thing being cleaned up, so an in-flight
+    // request outlived the keystroke that started it. /api/search reaches
+    // Yahoo on a 3.5s timeout for an unknown ticker, so "AA" could easily
+    // resolve AFTER "AAPL" and overwrite the right results with stale ones.
+    const controller = new AbortController();
+
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(term)}`);
+        const res = await fetch(`/api/search?q=${encodeURIComponent(term)}`,
+                                { signal: controller.signal });
         const json = (await res.json()) as { results?: Hit[] };
+        if (controller.signal.aborted) return;
         setHits(json.results ?? []);
         setCursor(0);
       } catch {
-        setHits([]);
+        if (!controller.signal.aborted) setHits([]);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     }, 220);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [query]);
 
   useEffect(() => {
@@ -71,7 +82,13 @@ export function SymbolSearch({
     if (!open || hits.length === 0) return;
     if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => (c + 1) % hits.length); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => (c - 1 + hits.length) % hits.length); }
-    else if (e.key === "Enter") { e.preventDefault(); choose(hits[cursor]); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      // The mouse path is guarded by `disabled={!hit.is_tradable}`; this one
+      // was not, so Enter navigated to a symbol the UI had greyed out.
+      const hit = hits[cursor];
+      if (hit?.is_tradable) choose(hit);
+    }
     else if (e.key === "Escape") { setOpen(false); }
   }
 

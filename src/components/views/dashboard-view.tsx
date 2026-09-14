@@ -19,6 +19,7 @@ import {
   cn, money, pct, relative, signedMoney, stamp, toneClass, toneOf,
 } from "@/lib/format";
 import type { CashLedgerRow } from "@/lib/database.types";
+import { useNow } from "@/hooks/use-now";
 
 const LEDGER_LABEL: Record<string, string> = {
   initial_capital: "Opening balance",
@@ -34,6 +35,9 @@ const LEDGER_LABEL: Record<string, string> = {
 };
 
 export function DashboardView() {
+  // Shared 1s clock -- relative() is computed during render, so without this
+  // the ages freeze between data changes and a live page reads as a dead one.
+  const now = useNow();
   const { data: portfolio, isLoading } = usePortfolio();
   const { data: working = [] } = useOrders({ working: true, limit: 12 });
   const { data: curve = [] } = useEquityCurve();
@@ -173,7 +177,7 @@ export function DashboardView() {
                     {n.body}
                   </p>
                 )}
-                <p className="mt-1.5 text-[10px] text-[var(--color-text-faint)]">{relative(n.created_at)}</p>
+                <p className="mt-1.5 text-[10px] text-[var(--color-text-faint)]">{relative(n.created_at, now)}</p>
               </article>
             ))
           )}

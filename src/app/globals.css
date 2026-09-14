@@ -114,8 +114,11 @@ body {
                       100% { background-color: transparent; } }
 @keyframes flash-down { 0% { background-color: color-mix(in oklab, var(--color-down) 26%, transparent); }
                       100% { background-color: transparent; } }
-.flash-up   { animation: flash-up   .7s ease-out; }
-.flash-down { animation: flash-down .7s ease-out; }
+/* Two class names per direction, identical keyframes. The alternation is what
+   restarts the animation on a repeated tick -- see flashClass() in
+   src/lib/quote-store.ts. */
+.flash-up-a, .flash-up-b     { animation: flash-up   .7s ease-out; }
+.flash-down-a, .flash-down-b { animation: flash-down .7s ease-out; }
 
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }
