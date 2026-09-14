@@ -165,6 +165,15 @@ body {
   letter-spacing: -0.01em;
 }
 
+/* NOTE ON OVERRIDES -- these classes are intentionally NOT in @layer
+   components. Tailwind v4 flattens a hand-written `@layer components` block
+   back out (verified: wrapping them changed the emitted CSS by one byte and
+   changed no precedence at all), so the layer buys nothing. These rules are
+   unlayered and therefore outrank every Tailwind utility: `.field`'s `padding`
+   shorthand beats `pl-9`, its `font-size` beats `text-[11px]`, its `width`
+   beats `w-44`. A call site that needs to override one of those must mark it
+   important (`!pl-9`), which is the convention already used across src/. */
+
 /* ------------------------------------------------------------ surfaces */
 .panel {
   background: var(--color-surface);

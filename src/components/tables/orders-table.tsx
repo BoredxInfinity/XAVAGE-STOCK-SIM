@@ -126,7 +126,7 @@ export function OrdersTable({
                   {isWorking(o.status) && (
                     <button
                       onClick={() => cancel(o.id)} disabled={cancelling === o.id}
-                      className="btn btn-danger px-2 py-1 text-[11px]"
+                      className="btn btn-danger !px-2 !py-1 !text-[11px]"
                       aria-label={`Cancel ${o.side} order for ${o.symbol}`}
                     >
                       {cancelling === o.id

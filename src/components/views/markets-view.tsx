@@ -112,7 +112,7 @@ export function MarketsView() {
             value={filter} onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter…"
             aria-label="Filter the watchlist"
-            className="field w-44 py-1 text-[11px]"
+            className="field !w-44 !py-1 !text-[11px]"
           />
         }
         bodyClassName="max-h-[calc(100dvh-250px)] overflow-y-auto overflow-x-auto"

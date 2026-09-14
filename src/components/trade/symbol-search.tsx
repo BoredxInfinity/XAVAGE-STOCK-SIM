@@ -101,7 +101,7 @@ export function SymbolSearch({
         />
         <input
           type="text" value={query} autoFocus={autoFocus} placeholder={placeholder}
-          className="field pl-9 pr-9"
+          className="field !pl-9 !pr-9"
           onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}

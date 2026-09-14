@@ -82,9 +82,9 @@ export function HistoryView() {
               value={filter} onChange={(e) => setFilter(e.target.value)}
               placeholder="Filter by symbol…"
               aria-label="Filter fills by symbol"
-              className="field w-44 py-1 text-[11px]"
+              className="field !w-44 !py-1 !text-[11px]"
             />
-            <button onClick={exportCsv} disabled={visible.length === 0} className="btn btn-ghost py-1 text-[11px]">
+            <button onClick={exportCsv} disabled={visible.length === 0} className="btn btn-ghost !py-1 !text-[11px]">
               <Download size={13} /> CSV
             </button>
           </>
