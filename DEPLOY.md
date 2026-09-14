@@ -41,14 +41,16 @@ first (this keeps it out of your shell history if you use a leading space):
 export SUPABASE_DB_PASSWORD='your-db-password'
 ```
 
-Then confirm all seven applied:
+Then confirm every migration applied:
 
 ```bash
 npx supabase migration list --linked
 ```
 
-You should see `20260910000001_schema` through `20260910000007_seed`, all with a
-remote timestamp.
+Every row must show a remote timestamp. Do not count to a fixed number — this
+said "all seven" while the repo had grown to twenty-plus, so the check passed
+with most of the schema missing. Compare the list against
+`supabase/migrations/` and make sure nothing is local-only.
 
 ---
 
@@ -104,8 +106,38 @@ Configuration → Site URL** and **Redirect URLs**.
 
 | Path | Schedule | Purpose |
 | --- | --- | --- |
-| `/api/cron/tick` | every minute | fallback prices + matching pass |
+| `/api/cron/tick` | 13:35 UTC, Mon–Fri — **once a day** | fallback prices + matching pass |
 | `/api/cron/settle` | 21:05 UTC, Mon–Fri | expire day orders, accrue interest, snapshot equity |
+
+> **The tick cron is not a safety net.** Hobby-plan crons are daily-only, so
+> `/api/cron/tick` fires once per weekday. If the price worker dies at 10:00
+> the market stays frozen until a human notices. The schedule is also
+> DST-fragile: 13:35 UTC is 09:35 ET only while EDT is in effect, and from
+> 1 Nov it lands an hour *before* the open.
+>
+> What actually covers a dead worker is the **uptime monitor** below. Set it
+> up; it is free and it takes two minutes.
+
+### Uptime monitoring (do this before the event)
+
+`/api/health` is unauthenticated and returns **503** when the market should be
+open and prices have stopped advancing. It judges the age of the newest
+**quote**, not `last_tick_at` — the worker heartbeats every cycle whether or
+not Yahoo answered, so a tick timestamp stays fresh straight through a feed
+outage.
+
+1. Create a free monitor (UptimeRobot, Betterstack, Cronitor — any of them).
+2. Point it at `https://<your-vercel-url>/api/health`, every 1 minute.
+3. Alert on a non-200, to a phone that will be in the room.
+
+Out of hours it returns 200 with `is_open: false`, so it will not page you at
+3am for a market that is simply shut.
+
+To see what it is reporting:
+
+```bash
+curl -s https://<your-vercel-url>/api/health | jq
+```
 
 ### Web Analytics
 

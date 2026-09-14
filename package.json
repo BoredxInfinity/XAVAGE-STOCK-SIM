@@ -2,6 +2,9 @@
   "name": "xavage-stock-sim",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -21,6 +24,7 @@
     "next": "15.5.25",
     "react": "19.1.1",
     "react-dom": "19.1.1",
+    "server-only": "0.0.1",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.3.1",
     "zod": "^4.1.11"

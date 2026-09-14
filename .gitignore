@@ -2,9 +2,14 @@ node_modules/
 .next/
 out/
 build/
+# Every .env variant, then re-admit the templates. The old three patterns
+# (.env, .env.local, .env*.local) left root .env.production, .env.development
+# and .env.staging tracked -- verified with `git check-ignore` -- and
+# worker/.env.production already exists, so the root twin was a plausible next
+# file to create and commit.
 .env
-.env.local
-.env*.local
+.env.*
+!.env.example
 .vercel
 *.tsbuildinfo
 next-env.d.ts
@@ -18,6 +23,7 @@ venv/
 supabase/.temp/
 supabase/.branches/
 worker/.env*
+!worker/.env.example
 
 # worker deploy bundle (built by worker/build-bundle.sh)
 xavage-worker-bundle.tar.gz

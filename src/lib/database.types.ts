@@ -66,6 +66,8 @@ export type Instrument = {
   is_tradable: boolean;
   is_halted: boolean;
   halt_reason: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export type Quote = {
@@ -134,6 +136,7 @@ export type Order = {
   updated_at: string;
   filled_at: string | null;
   closed_at: string | null;
+  expires_at: string | null;
 }
 
 export type Trade = {
@@ -147,6 +150,7 @@ export type Trade = {
   price: number;
   gross_amount: number;
   commission: number;
+  slippage_cost: number;
   net_cash_delta: number;
   realized_pnl: number;
   position_qty_after: number;
@@ -160,6 +164,7 @@ export type PositionRow = {
   avg_cost: number;
   realized_pnl: number;
   reserved_qty: number;
+  opened_at: string;
   updated_at: string;
 }
 
@@ -171,6 +176,7 @@ export type CashLedgerRow = {
   balance_after: number;
   ref_id: string | null;
   note: string | null;
+  created_by: string | null;
   created_at: string;
 }
 
