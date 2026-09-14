@@ -82,7 +82,7 @@ export function AppNav({
           <form action="/auth/signout" method="post">
             <button
               type="submit"
-              className="btn-icon btn-icon-danger"
+              className="inline-flex items-center justify-center btn-icon btn-icon-danger"
               aria-label="Sign out"
             >
               <LogOut size={16} />
@@ -92,7 +92,7 @@ export function AppNav({
 
         <button
           onClick={() => setOpen((v) => !v)}
-          className="md:hidden btn-icon"
+          className="inline-flex items-center justify-center md:hidden btn-icon"
           aria-label="Toggle navigation" aria-expanded={open}
         >
           {open ? <X size={18} /> : <Menu size={18} />}

@@ -307,9 +307,13 @@ body {
 }
 .btn-danger:hover:not(:disabled) { background: color-mix(in oklab, var(--color-down) 20%, transparent); }
 
-/* A bare icon button -- nav, toggles, row actions. */
+/* A bare icon button -- nav, toggles, row actions.
+   Deliberately sets no `display`. These rules are unlayered and so outrank
+   every Tailwind utility, which means a `display` here would beat `md:hidden`
+   on the same element -- exactly how the mobile menu button ended up visible
+   on desktop. Call sites bring their own `inline-flex items-center
+   justify-center`, so a responsive display utility can still win. */
 .btn-icon {
-  display: inline-flex; align-items: center; justify-content: center;
   width: 2rem; height: 2rem; border-radius: var(--radius-sm);
   color: var(--color-text-faint);
   border: 1px solid transparent;

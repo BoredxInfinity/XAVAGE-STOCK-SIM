@@ -16,7 +16,7 @@ export function ThemeToggle({ className }: { className?: string }) {
     <button
       type="button"
       onClick={toggle}
-      className={cn("btn-icon", className)}
+      className={cn("inline-flex items-center justify-center btn-icon", className)}
       aria-label={`Switch to ${next} theme`}
       title={`Switch to ${next} theme`}
     >
