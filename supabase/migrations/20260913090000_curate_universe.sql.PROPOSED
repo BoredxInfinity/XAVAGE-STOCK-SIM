@@ -1,0 +1,72 @@
+-- PROPOSED -- not applied. Review the list, then rename to drop the
+-- `.PROPOSED` suffix and push with the others.
+--
+-- Curating the tradable universe before the competition.
+--
+-- The universe reached 148 of a 150 cap mostly by accident: /api/search
+-- registers whatever Yahoo resolves, and a load-test run that typed real words
+-- into the search box minted ~29 symbols in six minutes. Most of what landed
+-- is fine -- the equity list is largely S&P 100 -- but 23 of the ETFs are
+-- derivative products that do not belong in a scored competition.
+
+-- ---------------------------------------------------------------- leverage
+-- Daily-reset leveraged and inverse funds. These do not track 2x or 3x their
+-- index over any period longer than one day -- they rebalance nightly, so path
+-- dependence eats them in a choppy market and compounds them in a trending
+-- one. In a five-week competition scored on total return, a team that puts
+-- everything into TQQQ or SQQQ is not making an investment decision, it is
+-- taking a leveraged coin flip that will decide the leaderboard on variance
+-- rather than skill. They also defeat the point of max_leverage = 1: a team
+-- gets 2-3x exposure through the instrument while the engine still sees an
+-- unlevered cash purchase.
+--
+-- Listed explicitly rather than matched on the name. A regex for '2x|3x'
+-- misses TSL ("GraniteShares 1.25x Long TSLA"), which is exactly the kind of
+-- gap that makes a pattern the wrong tool here.
+update public.instruments set is_tradable = false, updated_at = now()
+ where symbol in (
+   'GGLL',  -- Direxion Daily GOOGL Bull 2X
+   'MIC',   -- Corgi MU 2x Daily
+   'MSFL',  -- GraniteShares 2x Long MSFT
+   'MSFU',  -- Direxion Daily MSFT Bull 2X
+   'NVD',   -- GraniteShares 2x Short NVDA
+   'NVDL',  -- GraniteShares 2x Long NVDA
+   'NVDQ',  -- T-Rex 2X Inverse NVIDIA
+   'NVDU',  -- Direxion Daily NVDA Bull 2X
+   'NVDX',  -- T-Rex 2X Long NVIDIA
+   'QID',   -- ProShares UltraShort QQQ
+   'QLD',   -- ProShares Ultra QQQ
+   'SQQQ',  -- ProShares UltraPro Short QQQ
+   'TQQQ',  -- ProShares UltraPro QQQ
+   'TSDD',  -- GraniteShares 2x Short TSLA
+   'TSL',   -- GraniteShares 1.25x Long TSLA
+   'TSLL',  -- Direxion Daily TSLA Bull 2X
+   'TSLQ'   -- Tradr 2X Short TSLA
+ );
+
+-- ----------------------------------------------------- option-income funds
+-- Covered-call / synthetic-income ETFs. Their total return arrives mostly as
+-- distributions, and this simulation does not pay dividends -- the
+-- `ledger_type` enum has a 'dividend' entry that nothing writes. So a
+-- participant holding these sees only the price leg, which drifts down by
+-- design as the fund distributes. They would be buying an instrument that is
+-- rigged to lose money here, for reasons invisible from inside the game.
+update public.instruments set is_tradable = false, updated_at = now()
+ where symbol in (
+   'GOOY',  -- YieldMax GOOGL Option Income
+   'MSFO',  -- YieldMax MSFT Option Income
+   'NVDY',  -- YieldMax NVDA Option Income
+   'NVII',  -- REX NVDA Growth & Income
+   'QQQI',  -- NEOS NASDAQ-100 High Income
+   'TSLY'   -- YieldMax TSLA Option Income
+ );
+
+-- ------------------------------------------------------------- headroom
+-- 148 of 150 meant search was effectively frozen: /api/search stops resolving
+-- new tickers once the cap is reached, so nobody could discover a symbol that
+-- was not already there. Retiring 23 above plus this leaves real room.
+--
+-- The cap exists because the worker quotes the first N tradable symbols by
+-- name and a bigger universe is a slower cycle; 200 is comfortably inside what
+-- the 30s live cadence handles.
+update public.game_settings set worker_max_symbols = 200 where id;
