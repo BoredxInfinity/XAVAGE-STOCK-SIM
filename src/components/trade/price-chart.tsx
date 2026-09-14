@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AreaSeries, CandlestickSeries, ColorType, HistogramSeries,
   createChart, type IChartApi, type ISeriesApi, type UTCTimestamp,
@@ -10,6 +10,7 @@ import { useNow } from "@/hooks/use-now";
 import { useTheme } from "@/components/theme-provider";
 import { chartPalette } from "@/lib/chart-theme";
 import { nextWorkingBar, sameBar, type Bar } from "@/lib/working-bar";
+import { candleSeries } from "@/lib/candles";
 import { istCrosshair, istTickMark } from "@/lib/chart-time";
 import { Segmented } from "@/components/ui/segmented";
 
@@ -68,6 +69,23 @@ export function PriceChart({
   const [bars, setBars] = useState<Bar[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // What actually goes on the chart, and how wide those bars are.
+  //
+  // Candles get bucketed; the area line keeps every raw bar. Outside the
+  // regular session Yahoo's minute rows are last-price snapshots with o=h=l=c,
+  // which draw as 1px dashes rather than candles -- and even a full session of
+  // them is denser than a candle body can survive. See src/lib/candles.ts.
+  //
+  // `stepSec` comes back out because the synthetic working bar has to bucket
+  // the live price the same way the series it is drawn on does; feeding it the
+  // raw step would wedge a minute-wide candle in between the five-minute ones.
+  const display = useMemo(
+    () => (mode === "candles"
+      ? candleSeries(bars, RANGE_SPEC[range].stepSec)
+      : { bars, stepSec: RANGE_SPEC[range].stepSec }),
+    [bars, mode, range],
+  );
 
   /* ---- build the chart once ---- */
   useEffect(() => {
@@ -155,9 +173,14 @@ export function PriceChart({
             priceLineColor: p.violet,
           });
 
-    if (bars.length > 0) applyBars(bars);
-    // applyBars is stable for this effect's purposes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // No setData here: the data effect below runs straight after this one on
+    // the same render (effects fire in declaration order) and fills the new
+    // series. Writing here as well drew every bar twice on a mode flip.
+    //
+    // The working bar is bucketed for the mode we are leaving, so drop it --
+    // otherwise the first tick after the flip extends a candle that is no
+    // longer on the series.
+    working.current = null;
   }, [mode]);
 
   /* ---- repaint on a theme flip, without rebuilding anything ---- */
@@ -192,9 +215,9 @@ export function PriceChart({
     // Volume colour is per-point, so applyOptions cannot reach it. Rewrite
     // just that series' data -- the main series and lastWritten/plotted are
     // deliberately left alone so the working bar keeps rolling.
-    if (volRef.current && bars.length > 0) {
+    if (volRef.current && display.bars.length > 0) {
       volRef.current.setData(
-        bars.map((b) => ({
+        display.bars.map((b) => ({
           time: b.time as UTCTimestamp,
           value: b.volume,
           color: b.close >= b.open ? p.volumeUp : p.volumeDown,
@@ -216,10 +239,12 @@ export function PriceChart({
     // An empty payload must NOT be written: it would blank the series while
     // leaving lastWritten pointing at a bar that is no longer on it, and the
     // working-bar effect then bails on every tick.
-    if (bars.length === 0) return;
-    applyBars(bars);
+    if (display.bars.length === 0) return;
+    applyBars(display.bars);
+    // `mode` is here because this effect now owns the first write to a series
+    // the mode effect has just created.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bars]);
+  }, [display, mode]);
 
   function applyBars(list: Bar[]) {
     const series = mainRef.current;
@@ -323,7 +348,7 @@ export function PriceChart({
   const now = useNow();
 
   useEffect(() => {
-    if (!livePrice || bars.length === 0 || !mainRef.current) return;
+    if (!livePrice || display.bars.length === 0 || !mainRef.current) return;
 
     // Only overlay onto history that belongs to the range now selected.
     // Between clicking 5D and its bars arriving, `bars` is still the 1D array,
@@ -332,12 +357,18 @@ export function PriceChart({
 
     const bar = nextWorkingBar({
       bar: working.current,
-      last: bars[bars.length - 1],
+      // The series as drawn, not the raw feed: in candle mode the newest thing
+      // on the chart is a bucket, and the live price has to extend that bucket
+      // rather than open a narrow one on top of it.
+      last: display.bars[display.bars.length - 1],
       price: livePrice,
       nowMs: now,
-      stepSec: RANGE_SPEC[range].stepSec,
+      stepSec: display.stepSec,
+      // A candle two buckets wide is still a live chart, not a projection
+      // across a closed exchange -- so the allowance has to clear the bucket
+      // width that bucketing actually chose, which can exceed the raw step.
+      maxGapSec: Math.max(RANGE_SPEC[range].maxGapSec, 2 * display.stepSec),
       floor: lastWritten.current,
-      maxGapSec: RANGE_SPEC[range].maxGapSec,
     });
     if (!bar) return;
 
@@ -359,7 +390,7 @@ export function PriceChart({
     }
     plotted.current = bar;
     lastWritten.current = bar.time;
-  }, [livePrice, bars, mode, range, now]);
+  }, [livePrice, display, mode, range, now]);
 
   return (
     <div className="flex flex-col">
