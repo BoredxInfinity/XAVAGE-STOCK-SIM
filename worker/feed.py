@@ -196,20 +196,9 @@ def _rows_to_bars(symbol: str, interval: str, frame) -> list[dict]:
         if not close > 0:  # also rejects NaN, which fails every comparison
             continue
         o, h, l, v = opens[i], highs[i], lows[i], volumes[i]
-        traded = v > 0
 
-        # Two shapes of the same Yahoo junk, both zero-volume. Volume is the
-        # tell: every bad print observed had none, and every bar with real
-        # volume had a sane range, so neither rule can touch a traded bar.
-        if not traded:
-            # a) an implausible range within the bar
-            if h > 0 and l > 0 and (h - l) > close * _JUNK_RANGE_PCT:
-                continue
-            # b) a flat bar parked well away from its neighbours
-            if (prev_close > 0
-                    and seconds[i] - prev_sec <= _NEIGHBOUR_WINDOW_SEC
-                    and abs(close - prev_close) > prev_close * _JUNK_JUMP_PCT):
-                continue
+        if _is_junk_print(close, h, l, v, seconds[i], prev_close, prev_sec):
+            continue
 
         prev_close, prev_sec = close, seconds[i]
 
@@ -224,6 +213,92 @@ def _rows_to_bars(symbol: str, interval: str, frame) -> list[dict]:
             "v": int(v) if v == v else 0,
         })
     return rows
+
+
+# How far back to look for a trustworthy quote. The junk we are dodging is a
+# single bad print, so a short tail is plenty; scanning the whole 2-day frame
+# for every symbol every cycle would not buy anything.
+_QUOTE_LOOKBACK = 30
+
+# A print this far from the official prior close is not a move, it is bad data.
+# Deliberately wide: real single-session moves past 20% happen on earnings and
+# halts, and refusing to quote those would be worse than the disease.
+_MAX_MOVE_PCT = 0.35
+
+
+def _is_junk_print(close, high, low, volume, sec, prev_close, prev_sec) -> bool:
+    """Yahoo junk, in the two shapes it arrives in -- both zero-volume.
+
+    Volume is the tell: every bad print observed had none, and every bar with
+    real volume had a sane range, so neither rule can touch a traded bar.
+    """
+    if volume > 0:
+        return False
+    # a) an implausible range within the bar
+    if high > 0 and low > 0 and (high - low) > close * _JUNK_RANGE_PCT:
+        return True
+    # b) a flat bar parked well away from its neighbours
+    if (prev_close > 0
+            and sec - prev_sec <= _NEIGHBOUR_WINDOW_SEC
+            and abs(close - prev_close) > prev_close * _JUNK_JUMP_PCT):
+        return True
+    return False
+
+
+def _accept_mask(frame):
+    """Per-row: is this a print we trust?
+
+    The same filter the chart series uses, exposed so the quote and the day
+    range can be built from the same set of bars. Before this existed the three
+    disagreed: `_rows_to_bars` dropped a junk print from the candle while the
+    quote took it raw as `closes[-1]`.
+    """
+    n = len(frame)
+    keep = np.zeros(n, dtype=bool)
+    if n == 0:
+        return keep
+
+    seconds = _to_utc_index(frame).asi8 // 1_000_000_000
+    closes = _column(frame, "Close", n)
+    highs = _column(frame, "High", n)
+    lows = _column(frame, "Low", n)
+    volumes = _column(frame, "Volume", n)
+
+    prev_close = 0.0
+    prev_sec = 0
+    for i in range(n):
+        close = closes[i]
+        if not close > 0:  # also rejects NaN, which fails every comparison
+            continue
+        if _is_junk_print(close, highs[i], lows[i], volumes[i],
+                          seconds[i], prev_close, prev_sec):
+            continue
+        prev_close, prev_sec = close, seconds[i]
+        keep[i] = True
+    return keep
+
+
+def _trusted_quote(frame, prev_close: float | None = None) -> float | None:
+    """The newest close we are willing to clear trades against.
+
+    This used to be `closes[-1]` with only a `> 0` check -- the single bar most
+    likely to be junk, because it is the still-forming one. A 3-4% bogus print
+    there does not just draw a bad candle: `match_orders` fills every resting
+    stop and limit inside the move at a price that never traded, and unwinding
+    that is a manual job. Returns None rather than a suspect number, so the
+    caller can hold the previous quote instead of publishing this one.
+    """
+    tail = frame.tail(_QUOTE_LOOKBACK)
+    keep = _accept_mask(tail)
+    if not keep.any():
+        return None
+
+    price = _clean(_column(tail, "Close", len(tail))[keep][-1])
+    if price is None or price <= 0:
+        return None
+    if prev_close and prev_close > 0 and abs(price - prev_close) > prev_close * _MAX_MOVE_PCT:
+        return None
+    return price
 
 
 def _fresh_slice(frame, mark):
@@ -354,9 +429,6 @@ def fetch_intraday(
                     session = todays if not todays.empty else local.tail(1)
 
                 closes = local["Close"].to_numpy(dtype="float64", copy=False, na_value=_NAN)
-                price = _clean(closes[-1])
-                if price is None or price <= 0:
-                    continue
 
                 prev_close = prev_closes.get(symbol)
                 if prev_close is None:
@@ -368,15 +440,31 @@ def fetch_intraday(
                         earlier = earlier[np.isfinite(earlier)]
                         prev_close = float(earlier[-1]) if earlier.size else None
 
-                day_open = _clean(session["Open"].iloc[0])
+                # Junk-filtered, not closes[-1]. A rejected quote is left out
+                # of the batch entirely so the previous good price stands --
+                # publishing a suspect number is strictly worse than being one
+                # cycle stale, because the engine trades on it.
+                price = _trusted_quote(local, prev_close)
+                if price is None:
+                    log.debug("%s: no trustworthy print in the tail, holding last quote", symbol)
+                    continue
+
+                # The day range gets the same treatment. One junk bar used to
+                # corrupt the displayed high/low for the rest of the session,
+                # because these were taken from the unfiltered frame.
+                clean_session = session[_accept_mask(session)]
+                if clean_session.empty:
+                    clean_session = session
+
+                day_open = _clean(clean_session["Open"].iloc[0])
                 quotes.append({
                     "symbol": symbol,
                     "price": round(price, 6),
                     "prev_close": round(prev_close, 6) if prev_close else None,
                     "day_open": round(day_open or price, 6),
-                    "day_high": round(_clean(session["High"].max()) or price, 6),
-                    "day_low": round(_clean(session["Low"].min()) or price, 6),
-                    "volume": int(_clean(session["Volume"].sum()) or 0),
+                    "day_high": round(max(_clean(clean_session["High"].max()) or price, price), 6),
+                    "day_low": round(min(_clean(clean_session["Low"].min()) or price, price), 6),
+                    "volume": int(_clean(clean_session["Volume"].sum()) or 0),
                     "market_state": state,
                     "quote_time": iso,
                     "updated_at": iso,

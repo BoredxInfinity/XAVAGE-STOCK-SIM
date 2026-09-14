@@ -190,9 +190,55 @@ find "$STAGE/xavage-worker/libs" -type d -name tests -prune -exec rm -rf {} + 2>
 find "$STAGE/xavage-worker/libs" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
 say "Adding worker source"
-for f in poller.py feed.py db.py config.py market.py requirements.txt setup.sh .env.example; do
+# Every .py in worker/, not a hand-maintained list. The list drifted once
+# already -- logbook.py was added to the worker and never added here, so the
+# bundle shipped a poller.py whose very first import could not resolve, and
+# setup.sh only found out when it ran --check on the box mid-install.
+for f in "$WORKER_DIR"/*.py; do
+  cp "$f" "$STAGE/xavage-worker/"
+done
+for f in requirements.txt setup.sh .env.example; do
   cp "$WORKER_DIR/$f" "$STAGE/xavage-worker/"
 done
+
+say "Verifying every local import resolves inside the bundle"
+# A real `import poller` cannot run here: libs/ holds linux wheels and this
+# script builds on a mac. So check it statically instead -- walk the staged
+# sources, collect every module they import, and assert that anything not
+# satisfied by requirements.txt or the stdlib is a file we actually shipped.
+python3 - "$STAGE/xavage-worker" <<'PYEOF'
+import ast, pathlib, sys
+
+stage = pathlib.Path(sys.argv[1])
+local = {p.stem for p in stage.glob("*.py")}
+missing = []
+
+for src in sorted(stage.glob("*.py")):
+    tree = ast.parse(src.read_text(), filename=str(src))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [a.name.split(".")[0] for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            # level > 0 is a relative import; the worker has none, but be safe.
+            names = [node.module.split(".")[0]] if node.level == 0 and node.module else []
+        else:
+            continue
+        for name in names:
+            if name in local or name in sys.stdlib_module_names:
+                continue
+            # Third-party: yfinance and whatever it drags in, all vendored
+            # into libs/. Anything else unresolved is a packaging bug.
+            if (stage / "libs" / name).exists() or list((stage / "libs").glob(name + "-*.dist-info")):
+                continue
+            missing.append(f"{src.name}: {name}")
+
+if missing:
+    print("ERROR: imports that resolve to nothing in the bundle:", file=sys.stderr)
+    for m in sorted(set(missing)):
+        print("  " + m, file=sys.stderr)
+    sys.exit(1)
+print(f"  {len(local)} local module(s), all imports resolve")
+PYEOF
 
 # A marker setup.sh looks for, so it knows to skip pip entirely.
 cat > "$STAGE/xavage-worker/libs/BUNDLE_INFO" <<EOF

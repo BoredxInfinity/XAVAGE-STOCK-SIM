@@ -28,6 +28,25 @@ HOLIDAYS_2027 = {
 }
 HOLIDAYS = HOLIDAYS_2026 | HOLIDAYS_2027
 
+# Early closes: the exchange shuts at 13:00 ET and there is no post-market.
+#
+# These were missing entirely, and one of them -- 27 Nov 2026, the day after
+# Thanksgiving -- falls inside a competition running this autumn. Without it
+# session_state() returns 'regular' until 16:00, so the book stays open for
+# three hours against a price that stopped moving at 13:00: the UI says the
+# market is open while every order is refused as stale, which is the worst of
+# both worlds to debug on the day.
+EARLY_CLOSE_TIME = time(13, 0)
+EARLY_CLOSES = {
+    date(2026, 7, 2), date(2026, 11, 27), date(2026, 12, 24),
+    date(2027, 7, 2), date(2027, 11, 26), date(2027, 12, 23),
+}
+
+
+def regular_close(moment: datetime) -> time:
+    """The bell for this particular day."""
+    return EARLY_CLOSE_TIME if moment.date() in EARLY_CLOSES else REGULAR_CLOSE
+
 
 def now_ny() -> datetime:
     return datetime.now(NY)
@@ -45,11 +64,15 @@ def session_state(moment: datetime | None = None) -> str:
         return "closed"
 
     clock = moment.time()
-    if REGULAR_OPEN <= clock < REGULAR_CLOSE:
+    close = regular_close(moment)
+    if REGULAR_OPEN <= clock < close:
         return "regular"
     if PRE_OPEN <= clock < REGULAR_OPEN:
         return "pre"
-    if REGULAR_CLOSE <= clock < POST_CLOSE:
+    # An early close has no post-market session either -- the tape stops.
+    if moment.date() in EARLY_CLOSES:
+        return "closed"
+    if close <= clock < POST_CLOSE:
         return "post"
     return "closed"
 

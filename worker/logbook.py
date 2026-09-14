@@ -80,6 +80,8 @@ class SupabaseLogHandler(logging.Handler):
         self._lock = threading.Lock()
         self._last_flush = time.monotonic()
         self._dropped = 0
+        # (level, event, message) -> (first_seen_monotonic, folded_count)
+        self._recent: dict[tuple, tuple[float, int]] = {}
 
     def attach(self, db) -> None:
         self.db = db
@@ -93,6 +95,8 @@ class SupabaseLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             if not self._wanted(record):
+                return
+            if self._is_repeat(record):
                 return
             row = {
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -118,6 +122,41 @@ class SupabaseLogHandler(logging.Handler):
                 self.flush()
         except Exception:  # noqa: BLE001 - logging must never raise
             pass
+
+    # Identical lines inside this window are shipped once.
+    #
+    # During a Yahoo outage feed.py logs one WARNING per batch per cycle: at
+    # 150 symbols over batches of 60 that is 3 lines every 5s, ~2,000 an hour,
+    # on top of db.py's retry warnings -- against a 500 MB free tier where
+    # price_bars already claims most of the room. The hundredth copy of
+    # "rate limited" tells an organiser nothing the first did not, so keep the
+    # first, count the rest, and say how many were folded in.
+    _REPEAT_WINDOW_SEC = 60.0
+
+    def _is_repeat(self, record) -> bool:
+        key = (record.levelname, getattr(record, "event", "log"), record.getMessage()[:200])
+        now = time.monotonic()
+        with self._lock:
+            last, count = self._recent.get(key, (0.0, 0))
+            if now - last < self._REPEAT_WINDOW_SEC:
+                self._recent[key] = (last, count + 1)
+                return True
+            # First of a new window. If the previous window folded anything up,
+            # note it on this line so the count is not silently lost.
+            if count:
+                record.msg = f"{record.getMessage()} [+{count} identical in the last "\
+                             f"{int(self._REPEAT_WINDOW_SEC)}s]"
+                record.args = ()
+            self._recent[key] = (now, 0)
+
+            # Bounded: distinct messages are few, but a message carrying a
+            # symbol name would otherwise grow this per symbol.
+            if len(self._recent) > 200:
+                cutoff = now - self._REPEAT_WINDOW_SEC * 2
+                for k, (t, _) in list(self._recent.items()):
+                    if t < cutoff:
+                        del self._recent[k]
+        return False
 
     def flush(self) -> None:
         if self.db is None:

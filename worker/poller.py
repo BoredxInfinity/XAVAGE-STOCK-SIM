@@ -156,14 +156,32 @@ class Worker:
         "no live price" on symbols the admin enabled, which is very hard to
         diagnose mid-competition.
         """
-        rows, total = self.db.select(
-            "instruments",
-            {"select": "symbol", "is_tradable": "eq.true", "order": "symbol",
-             "limit": self.max_symbols},
-            count=True,
-            label="universe",
-        )
-        self._symbols = [row["symbol"] for row in rows]
+        # Wrapped for the same reason the settings read below is: a transient
+        # failure here used to propagate to the loop handler, which costs a
+        # whole cycle AND drops the worker to the 120s `regular` backoff. The
+        # universe changes rarely, so the list already in hand is almost
+        # certainly still right -- keep it and try again next cycle.
+        try:
+            rows, total = self.db.select(
+                "instruments",
+                {"select": "symbol", "is_tradable": "eq.true", "order": "symbol",
+                 "limit": self.max_symbols},
+                count=True,
+                label="universe",
+            )
+        except PostgrestError as exc:
+            log.warning("could not refresh the universe, keeping %d cached symbol(s): %s",
+                        len(self._symbols), exc)
+            rows, total = None, None
+
+        # An empty read is treated the same way. It is far more likely to be a
+        # blip than a genuine "the organisers un-tradabled everything", and
+        # acting on it stops the heartbeat as well as the prices.
+        if rows:
+            self._symbols = [row["symbol"] for row in rows]
+        elif rows is not None:
+            log.warning("universe query returned no rows, keeping %d cached symbol(s)",
+                        len(self._symbols))
 
         if total is not None and total > len(self._symbols):
             log.warning(
@@ -359,8 +377,24 @@ class Worker:
         if not quotes:
             return 0, 0
 
-        # on_conflict=symbol -> one round trip for the whole universe
-        self.db.upsert("quotes", quotes, "symbol", label="quotes upsert")
+        # on_conflict=symbol -> one round trip for the whole universe.
+        #
+        # Guarded: quotes.symbol references instruments(symbol), and the
+        # universe is cached for SETTINGS_TTL. So for up to a minute after an
+        # organiser un-tradables or deletes an instrument, every cycle raises a
+        # foreign-key 409 -- which used to propagate out of stage(), out of
+        # tick(), into the blanket handler, and leave the worker sleeping 120s
+        # on the `regular` default. One admin click froze prices, the heartbeat
+        # and matching for roughly three minutes. Now it costs one cycle's
+        # prices and forces a universe refresh instead.
+        try:
+            self.db.upsert("quotes", quotes, "symbol", label="quotes upsert")
+        except PostgrestError as exc:
+            log.warning("quotes upsert failed, refreshing the universe: %s", exc,
+                        extra={"event": "quotes_upsert_failed", "ship": True})
+            self.last_settings_run = 0.0
+            return 0, 0
+
         self.sent_last_cycle = self.broadcast_quotes(quotes)
 
         written, failed = self.write_bars(bars)
@@ -680,9 +714,28 @@ class Worker:
             pushed, new_bars = self.push_market_data(symbols)
             d["quotes"], d["bars"] = pushed, new_bars
             d["broadcast"] = self.sent_last_cycle
-        self.heartbeat()
 
-        matched = self.run_matching() if pushed else None
+        # The heartbeat says "this process is alive", which is not the same as
+        # "the feed is working". When Yahoo rate-limits us _download() swallows
+        # the error and push_market_data returns 0 -- and this used to stamp
+        # last_tick_at anyway, so Admin -> Control room stayed green while no
+        # price had moved for the length of the outage. Label the tick with
+        # what actually happened and let the dashboard read last_quote_at.
+        self.heartbeat("worker" if pushed else "worker-nodata")
+        if not pushed:
+            log.warning(
+                "feed returned no quotes for %d symbol(s) - prices are not advancing",
+                len(symbols),
+                extra={"event": "feed_empty", "cycle": self.cycle, "ship": True,
+                       "detail": {"symbols": len(symbols), "session": state}},
+            )
+
+        # Matching runs regardless. Resting limits and stops are triggered by
+        # the price the book already has; skipping the pass because THIS cycle
+        # fetched nothing meant a feed wobble also froze every working order,
+        # which is a strictly worse failure than filling on a slightly older
+        # price -- and match_orders now refuses a stale quote on its own.
+        matched = self.run_matching()
         self.daily_jobs(state)
         self.last_state = state
 

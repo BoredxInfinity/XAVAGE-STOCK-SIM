@@ -94,7 +94,7 @@ Both were dropped deliberately when this moved to a 1 GB instance.
 | `POLL_INTERVAL_SECONDS` | `5` | The `live` cadence, while the regular session is open. A cycle takes ~4s, so this is about as tight as it usefully goes |
 | `REGULAR_INTERVAL_SECONDS` | `120` | The `regular` cadence, through pre-market and after hours — real trading, but thin |
 | `IDLE_INTERVAL_SECONDS` | `60` | The `idle` cadence. No feed requests are made at all; this is only how often the worker says it is still alive |
-| `HISTORY_INTERVAL_SECONDS` | `1800` | 5D/1Y chart ranges. The 1m series rides the price tick, so it is never staler than the price |
+| `HISTORY_INTERVAL_SECONDS` | `300` | 5D/1M chart ranges. The 1m series rides the price tick, so it is never staler than the price |
 | `MAX_SYMBOLS` | `400` | Ceiling on the polled universe |
 | `BATCH_SIZE` | `60` | Symbols per bulk download |
 | `DOWNLOAD_THREADS` | `8` | yfinance fetches one URL per symbol; past 8 the gain is noise |
@@ -107,7 +107,7 @@ The exchange clock picks the mode, and the mode picks the cadence:
 | Exchange | Mode | What runs |
 | --- | --- | --- |
 | regular | `live` | The whole pipeline at `POLL_INTERVAL_SECONDS` |
-| pre / post | `regular` | The same pipeline at `REGULAR_INTERVAL_SECONDS` |
+| pre / post | `regular` | The same pipeline at `REGULAR_INTERVAL_SECONDS`. Note the BOOK does not fill in pre/post — see `private.fills_allowed` |
 | closed | `idle` | Nothing. No yfinance requests; settlement still runs, and the heartbeat keeps the control room honest |
 
 The cadences are also settable from Admin -> Stock worker, which writes them
@@ -151,6 +151,28 @@ feed and the order book can never disagree about whether the market is there.
 
 ## If the worker dies mid-competition
 
-The Vercel cron at `/api/cron/tick` keeps refreshing prices and matching orders
-once a minute. The game degrades to one-minute prices rather than a frozen
-market. Restart the worker and it resumes on its next cycle.
+**The market freezes.** There is no automatic fallback.
+
+`/api/cron/tick` looks like one, and older versions of this file said it
+refreshed prices once a minute. It does not: `vercel.json` schedules it once
+per weekday, because Hobby-plan crons are daily-only. So if this worker stops
+at 10:00, prices stop at 10:00 and every resting order stops filling, until
+somebody restarts it.
+
+What tells you it happened is the uptime monitor on `/api/health` (set up in
+[`DEPLOY.md`](../DEPLOY.md)). That endpoint returns 503 when the market should
+be open and the newest quote has gone stale — deliberately judged on the quote,
+not on `last_tick_at`, because the worker heartbeats every cycle whether or not
+Yahoo answered.
+
+To recover:
+
+```bash
+sudo systemctl restart xavage-worker
+sudo journalctl -u xavage-worker -n 50 --no-pager
+```
+
+It resumes on its next cycle and backfills the bars it missed. If the box
+itself is unreachable, prices stay frozen — so consider halting trading from
+Admin → Settings until it is back, rather than letting orders queue against a
+price that has stopped moving.
