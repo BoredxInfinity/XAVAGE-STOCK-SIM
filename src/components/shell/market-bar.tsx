@@ -8,6 +8,7 @@ import { useQuotesVersion } from "@/hooks/use-quote";
 import { useNow } from "@/hooks/use-now";
 import { quoteStore } from "@/lib/quote-store";
 import { cn, num, pct, relative } from "@/lib/format";
+import { nextOpenLabel } from "@/lib/market-session";
 import type { MarketState } from "@/lib/database.types";
 import { flashClass } from "@/lib/quote-store";
 
@@ -50,6 +51,14 @@ export function MarketBar() {
   const halted = status && !status.trading_enabled;
   const session = SESSION[status?.market_state ?? "closed"];
 
+  // Recomputed on the minute rather than every second: `now` ticks at 1Hz for
+  // the tick-age string, and this answer only changes once a minute.
+  const opensAt = useMemo(
+    () => nextOpenLabel(new Date(now)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [Math.floor(now / 60_000)],
+  );
+
   return (
     <div className="border-b border-[var(--color-border-soft)] bg-[var(--color-bg-elev)]">
       <div className="max-w-[1600px] mx-auto px-4 lg:px-6 h-9 flex items-center gap-4">
@@ -64,9 +73,30 @@ export function MarketBar() {
               {status ? session.label : "Connecting…"}
             </span>
           )}
-          <span className="hidden lg:inline text-[11px] text-[var(--color-text-faint)] num">
-            {status?.last_tick_at ? `tick ${relative(status.last_tick_at, now)}` : "awaiting feed"}
-          </span>
+          {/* The two readouts swap rather than compete for room in a 36px bar,
+              because each only matters in one state. Through the regular
+              session, the age of the last tick is the live-or-dead signal.
+              Outside it -- closed, pre OR post -- "Market closed" answers the
+              wrong half of the question: the participant wants to know when to
+              come back, and 09:30 ET is 19:00 IST in summer and 20:00 IST in
+              winter, which is not something they can be expected to work out.
+              Pre-market gets it too, because the tape being live there does
+              not mean the book fills (see private.fills_allowed).
+              Suppressed during an organiser halt, where the banner below is
+              the real explanation and a reopening time would contradict it.
+
+              Shown at every width, unlike the tick age: when the book is shut
+              the tape behind it is static anyway, so the few characters it
+              costs buy the one thing someone on a phone needs off this bar. */}
+          {status && status.market_state !== "regular" && !halted && opensAt ? (
+            <span className="text-[11px] text-[var(--color-text-dim)] num whitespace-nowrap">
+              {opensAt}
+            </span>
+          ) : (
+            <span className="hidden lg:inline text-[11px] text-[var(--color-text-faint)] num">
+              {status?.last_tick_at ? `tick ${relative(status.last_tick_at, now)}` : "awaiting feed"}
+            </span>
+          )}
         </div>
 
         <div className="h-4 w-px bg-[var(--color-border)] shrink-0 hidden sm:block" />
