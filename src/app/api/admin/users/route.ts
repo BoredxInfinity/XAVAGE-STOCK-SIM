@@ -48,7 +48,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const guard = await requireAdmin();
+  const guard = await requireAdmin(request);
   if (!guard.ok) return guard.response;
 
   const parsed = CreateUser.safeParse(await request.json().catch(() => null));

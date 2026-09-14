@@ -15,8 +15,8 @@ export const dynamic = "force-dynamic";
  * run rather than the last one. The worker prunes to 48 hours on its own
  * timer; this is the manual version.
  */
-export async function DELETE() {
-  const guard = await requireAdmin();
+export async function DELETE(request: Request) {
+  const guard = await requireAdmin(request);
   if (!guard.ok) return guard.response;
 
   const { count: before } = await guard.ctx.admin

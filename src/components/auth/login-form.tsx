@@ -5,6 +5,22 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { AlertCircle, Eye, EyeOff, Loader2, LogIn } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
+
+/**
+ * `next` comes from the query string, so it is attacker-controlled.
+ * startsWith("/") alone is not enough: "//evil.com" passes it, and
+ * router.replace("//evil.com") is a protocol-relative navigation straight off
+ * the site -- a clean phishing hand-off the moment someone authenticates.
+ */
+function isSafeNext(next: string | null): next is string {
+  return (
+    !!next &&
+    next.startsWith("/") &&
+    !next.startsWith("//") &&
+    !next.startsWith("/\\")
+  );
+}
+
 export function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
@@ -52,7 +68,7 @@ export function LoginForm() {
     const next = params.get("next");
 
     if (result?.must_change_password) router.replace("/change-password");
-    else if (next && next.startsWith("/")) router.replace(next);
+    else if (isSafeNext(next)) router.replace(next);
     else router.replace(result?.role === "admin" ? "/admin" : "/dashboard");
 
     router.refresh();

@@ -19,7 +19,7 @@ const PatchUser = z.object({
 });
 
 export async function PATCH(request: Request, ctx: { params: Promise<{ id: string }> }) {
-  const guard = await requireAdmin();
+  const guard = await requireAdmin(request);
   if (!guard.ok) return guard.response;
 
   const { id } = await ctx.params;
@@ -75,8 +75,8 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
   return NextResponse.json({ ok: true, ...(issued ? { password: issued } : {}) });
 }
 
-export async function DELETE(_request: Request, ctx: { params: Promise<{ id: string }> }) {
-  const guard = await requireAdmin();
+export async function DELETE(request: Request, ctx: { params: Promise<{ id: string }> }) {
+  const guard = await requireAdmin(request);
   if (!guard.ok) return guard.response;
 
   const { id } = await ctx.params;

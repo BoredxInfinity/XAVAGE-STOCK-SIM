@@ -13,7 +13,7 @@ const Create = z.object({
 
 /** Push a market event / rule change to every participant's dashboard. */
 export async function POST(request: Request) {
-  const guard = await requireAdmin();
+  const guard = await requireAdmin(request);
   if (!guard.ok) return guard.response;
 
   const parsed = Create.safeParse(await request.json().catch(() => null));
@@ -39,7 +39,7 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
-  const guard = await requireAdmin();
+  const guard = await requireAdmin(request);
   if (!guard.ok) return guard.response;
 
   const id = new URL(request.url).searchParams.get("id");

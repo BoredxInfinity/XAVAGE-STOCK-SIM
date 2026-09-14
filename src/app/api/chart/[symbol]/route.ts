@@ -22,7 +22,12 @@ export async function GET(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
 
-  const { symbol } = await ctx.params;
+  const { symbol: rawSymbol } = await ctx.params;
+  // Tickers are [A-Z0-9.-]. Anything else cannot match a row, so reject it here
+  // rather than spending a query on it.
+  const symbol = rawSymbol.toUpperCase().replace(/[^A-Z0-9.-]/g, "").slice(0, 20);
+  if (!symbol) return NextResponse.json({ error: "Bad symbol" }, { status: 400 });
+
   const rangeKey = (new URL(request.url).searchParams.get("range") ?? "1D").toUpperCase();
   const range = RANGES[rangeKey] ?? RANGES["1D"];
 
@@ -31,7 +36,7 @@ export async function GET(
   const { data, error } = await supabase
     .from("price_bars")
     .select("ts, o, h, l, c, v")
-    .eq("symbol", symbol.toUpperCase())
+    .eq("symbol", symbol)
     .eq("interval", range.interval)
     .gte("ts", since)
     .order("ts", { ascending: true })
@@ -39,8 +44,12 @@ export async function GET(
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
+  // Every viewer of a symbol gets byte-identical bars, so this is the one
+  // response in the app worth caching at the edge. 300 people watching SPY was
+  // 300 identical price_bars scans every 30s; now it is one per window.
+  // stale-while-revalidate keeps the chart instant while the refresh happens.
   return NextResponse.json({
-    symbol: symbol.toUpperCase(),
+    symbol,
     range: rangeKey,
     interval: range.interval,
     bars: (data ?? []).map((b) => ({
@@ -48,5 +57,10 @@ export async function GET(
       open: Number(b.o), high: Number(b.h), low: Number(b.l), close: Number(b.c),
       volume: Number(b.v),
     })),
+  }, {
+    headers: {
+      "Cache-Control": "private, max-age=5",
+      "CDN-Cache-Control": "public, s-maxage=15, stale-while-revalidate=45",
+    },
   });
 }

@@ -17,7 +17,7 @@ const Add = z.object({ symbol: z.string().min(1).max(15) });
 
 /** Toggle a symbol in or out of the tradable universe. */
 export async function PATCH(request: Request) {
-  const guard = await requireAdmin();
+  const guard = await requireAdmin(request);
   if (!guard.ok) return guard.response;
 
   const parsed = Patch.safeParse(await request.json().catch(() => null));
@@ -35,7 +35,7 @@ export async function PATCH(request: Request) {
 
 /** Add a symbol to the universe by resolving it against Yahoo. */
 export async function POST(request: Request) {
-  const guard = await requireAdmin();
+  const guard = await requireAdmin(request);
   if (!guard.ok) return guard.response;
 
   const parsed = Add.safeParse(await request.json().catch(() => null));

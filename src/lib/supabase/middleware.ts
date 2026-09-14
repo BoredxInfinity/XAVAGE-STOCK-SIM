@@ -24,7 +24,9 @@ export async function updateSession(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   const path = request.nextUrl.pathname;
 
-  const isPublic = path === "/login" || path.startsWith("/auth") || path.startsWith("/api/cron");
+  // No /api here: src/middleware.ts excludes `api/` from the matcher entirely,
+  // so every route under it authenticates itself and never reaches this file.
+  const isPublic = path === "/login" || path.startsWith("/auth");
 
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();
@@ -49,8 +51,22 @@ export async function updateSession(request: NextRequest) {
       return NextResponse.redirect(url);
     }
 
-    // Admin-issued temporary password must be rotated before anything else.
-    if (profile?.must_change_password && path !== "/change-password" && !path.startsWith("/api")) {
+    // Admin-issued temporary password must be rotated before anything else --
+    // but only by someone who CAN rotate it.
+    //
+    // /change-password renders a form for admins and, for participants, only a
+    // "passwords are issued by the organisers" note with a link back to
+    // /dashboard. So for a participant this redirect was a closed loop: bounced
+    // to a page with no form, whose only button bounces them back. One stray
+    // `update profiles set must_change_password = true` and that account is
+    // locked out of the competition with no self-service exit and no admin
+    // control to clear it either.
+    //
+    // Participants get their credentials reissued by an organiser instead, and
+    // that path (PATCH /api/admin/users/[id]) clears the flag.
+    if (profile?.must_change_password
+        && profile.role === "admin"
+        && path !== "/change-password") {
       const url = request.nextUrl.clone();
       url.pathname = "/change-password";
       return NextResponse.redirect(url);

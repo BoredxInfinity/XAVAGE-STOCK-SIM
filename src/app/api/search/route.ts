@@ -25,15 +25,72 @@ interface Hit {
  * Anything resolved from Yahoo is inserted into `instruments`, which is what
  * makes the price worker start polling it on its next cycle.
  */
+
+/** At most this many new symbols may be minted by a single search. */
+const MAX_REGISTRATIONS_PER_REQUEST = 3;
+
+/**
+ * PostgREST's `.or()` takes a RAW filter expression -- supabase-js does not
+ * escape it the way it escapes `.eq()`. Interpolating the query string
+ * straight in let `?q=x,is_halted.is.true` append a filter clause, let `%`
+ * match the entire table, and let an unbalanced paren produce a 500.
+ *
+ * Dots survive because real tickers contain them (BRK.B); PostgREST splits a
+ * filter on its first two dots, so a dot inside the value is harmless.
+ */
+function sanitiseTerm(raw: string): string {
+  return raw.replace(/[^A-Za-z0-9 .&-]/g, "").trim();
+}
+
+/**
+ * Crude per-user throttle. Each serverless instance keeps its own counters, so
+ * this is a speed bump rather than a guarantee -- but this route reaches Yahoo
+ * and then writes `instruments` with the service-role key, and an unthrottled
+ * keystroke-per-request path to both of those is worth slowing down. The map
+ * is bounded by eviction so a long-lived instance cannot grow it without end.
+ */
+const RATE_WINDOW_MS = 10_000;
+const RATE_MAX = 20;
+const hits = new Map<string, number[]>();
+
+function allowRequest(userId: string): boolean {
+  const now = Date.now();
+  const recent = (hits.get(userId) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+  recent.push(now);
+  hits.set(userId, recent);
+
+  if (hits.size > 500) {
+    for (const [key, times] of hits) {
+      if (times.every((t) => now - t >= RATE_WINDOW_MS)) hits.delete(key);
+    }
+  }
+  return recent.length <= RATE_MAX;
+}
+
 export async function GET(request: Request) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
 
+  // src/middleware.ts deliberately excludes /api, so this route is where an
+  // account being switched off actually has to be noticed. Without it a
+  // deactivated participant keeps the service-role registration path below for
+  // as long as their cookie lives.
+  const { data: profile } = await supabase
+    .from("profiles").select("is_active").eq("id", user.id).maybeSingle();
+  if (!profile?.is_active) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  if (!allowRequest(user.id)) {
+    return NextResponse.json({ error: "Too many searches. Slow down." }, { status: 429 });
+  }
+
   const q = (new URL(request.url).searchParams.get("q") ?? "").trim();
   if (q.length < 1) return NextResponse.json({ results: [] });
 
-  const term = q.slice(0, 40);
+  const term = sanitiseTerm(q.slice(0, 40));
+  if (!term) return NextResponse.json({ results: [] });
 
   // tradable_instruments, not instruments: past the symbol cap the worker
   // quotes nothing, so offering the symbol here would be offering a price we
@@ -41,7 +98,7 @@ export async function GET(request: Request) {
   const { data: local } = await supabase
     .from("tradable_instruments")
     .select("symbol, name, exchange, asset_type, is_tradable, is_halted")
-    .or(`symbol.ilike.${term}%,name.ilike.%${term}%`)
+    .or(`symbol.ilike.${term}%,name.ilike.%${term}%`)   // term is sanitised above
     .order("symbol")
     .limit(12);
 
@@ -81,8 +138,13 @@ export async function GET(request: Request) {
             asset_type: (h.quoteType ?? "EQUITY").toUpperCase(),
           }));
 
-        // Never register more than the universe has room for.
-        fresh.length = Math.min(fresh.length, capacity);
+        // Never register more than the universe has room for -- and never more
+        // than a handful per request. `capacity` was read before the Yahoo
+        // round trip, so concurrent searches each see the same room and can
+        // collectively overshoot it; bounding the per-request slice turns a
+        // potential overshoot of `capacity x concurrency` into `3 x
+        // concurrency`, which the cap check on the next request absorbs.
+        fresh.length = Math.min(fresh.length, capacity, MAX_REGISTRATIONS_PER_REQUEST);
 
         if (fresh.length > 0) {
           // Register them so the worker begins quoting them. Requires service
